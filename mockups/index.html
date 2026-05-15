@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="de"><head>
+<meta charset="utf-8">
+<title>FC Wängi 1967 — Anzeigetafel UI Mockups</title>
+<style>
+  body { font-family:-apple-system,Segoe UI,sans-serif; background:#0a0a0a; color:#fff;
+         margin:0; padding:32px; }
+  header { background:#be1c1c; padding:16px 24px; border-radius:8px; margin-bottom:32px; }
+  h1 { margin:0; letter-spacing:.05em; }
+  h2 { margin-top:48px; color:#fdc500; letter-spacing:.04em;
+        border-bottom:1px solid #333; padding-bottom:8px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(680px, 1fr)); gap:32px; }
+  .grid.wb { grid-template-columns:repeat(auto-fill, minmax(360px, 1fr)); }
+  figure { margin:0; text-align:center; }
+  figcaption { margin-top:10px; color:#888; font-size:.9rem; }
+  footer { margin-top:48px; color:#666; font-size:.8rem; text-align:center; }
+</style></head><body>
+<header><h1>FC Wängi 1967 — Anzeigetafel UI Mockups</h1></header>
+
+<h2>Controller (M5Stack Core2 · 320×240 landscape)</h2>
+<div class="grid"><figure><img src="controller/01_splash.png" width="640" height="480" style="image-rendering:pixelated;background:#0a0a0a;border:1px solid #333"><figcaption>Splash / boot</figcaption></figure>
+<figure><img src="controller/02_setup.png" width="640" height="480" style="image-rendering:pixelated;background:#0a0a0a;border:1px solid #333"><figcaption>Match setup</figcaption></figure>
+<figure><img src="controller/03_setup_preset_picker.png" width="640" height="480" style="image-rendering:pixelated;background:#0a0a0a;border:1px solid #333"><figcaption>Setup → preset picker</figcaption></figure>
+<figure><img src="controller/04_setup_keyboard.png" width="640" height="480" style="image-rendering:pixelated;background:#0a0a0a;border:1px solid #333"><figcaption>Setup → opponent keyboard</figcaption></figure>
+<figure><img src="controller/05_match_live.png" width="640" height="480" style="image-rendering:pixelated;background:#0a0a0a;border:1px solid #333"><figcaption>Live match (clock running)</figcaption></figure>
+<figure><img src="controller/06_match_paused.png" width="640" height="480" style="image-rendering:pixelated;background:#0a0a0a;border:1px solid #333"><figcaption>Live match (paused)</figcaption></figure>
+<figure><img src="controller/07_match_stoppage.png" width="640" height="480" style="image-rendering:pixelated;background:#0a0a0a;border:1px solid #333"><figcaption>Live match w/ stoppage time set</figcaption></figure>
+<figure><img src="controller/08_match_undo_available.png" width="640" height="480" style="image-rendering:pixelated;background:#0a0a0a;border:1px solid #333"><figcaption>Live match w/ undo available</figcaption></figure>
+<figure><img src="controller/09_match_overflow_score.png" width="640" height="480" style="image-rendering:pixelated;background:#0a0a0a;border:1px solid #333"><figcaption>Score > 9 (board wrap warning)</figcaption></figure>
+<figure><img src="controller/10_match_link_lost.png" width="640" height="480" style="image-rendering:pixelated;background:#0a0a0a;border:1px solid #333"><figcaption>Live match · connection lost</figcaption></figure>
+<figure><img src="controller/11_numpad.png" width="640" height="480" style="image-rendering:pixelated;background:#0a0a0a;border:1px solid #333"><figcaption>Numeric pad popup</figcaption></figure>
+<figure><img src="controller/12_halftime.png" width="640" height="480" style="image-rendering:pixelated;background:#0a0a0a;border:1px solid #333"><figcaption>Halftime (countdown)</figcaption></figure>
+<figure><img src="controller/13_ended_draw.png" width="640" height="480" style="image-rendering:pixelated;background:#0a0a0a;border:1px solid #333"><figcaption>Match ended · draw (extra options)</figcaption></figure>
+<figure><img src="controller/14_ended_decided.png" width="640" height="480" style="image-rendering:pixelated;background:#0a0a0a;border:1px solid #333"><figcaption>Match ended · decided</figcaption></figure>
+<figure><img src="controller/15a_penalty_toss.png" width="640" height="480" style="image-rendering:pixelated;background:#0a0a0a;border:1px solid #333"><figcaption>Penalty — who shoots first?</figcaption></figure>
+<figure><img src="controller/15_penalty.png" width="640" height="480" style="image-rendering:pixelated;background:#0a0a0a;border:1px solid #333"><figcaption>Penalty shootout</figcaption></figure>
+<figure><img src="controller/16_settings.png" width="640" height="480" style="image-rendering:pixelated;background:#0a0a0a;border:1px solid #333"><figcaption>Settings</figcaption></figure>
+<figure><img src="controller/17_history.png" width="640" height="480" style="image-rendering:pixelated;background:#0a0a0a;border:1px solid #333"><figcaption>Match history (scrollable)</figcaption></figure>
+<figure><img src="controller/18_defaults.png" width="640" height="480" style="image-rendering:pixelated;background:#0a0a0a;border:1px solid #333"><figcaption>Match defaults editor</figcaption></figure></div>
+
+<h2>Wall-box (LilyGO T-Display-S3 · 170×320 portrait)</h2>
+<div class="grid wb"><figure><img src="wallbox/01_boot.png" width="340" height="640" style="image-rendering:pixelated;background:#0a0a0a;border:1px solid #333"><figcaption>Boot</figcaption></figure>
+<figure><img src="wallbox/02_pairing.png" width="340" height="640" style="image-rendering:pixelated;background:#0a0a0a;border:1px solid #333"><figcaption>Pairing — waiting</figcaption></figure>
+<figure><img src="wallbox/03_paired_idle.png" width="340" height="640" style="image-rendering:pixelated;background:#0a0a0a;border:1px solid #333"><figcaption>Paired — bereit</figcaption></figure>
+<figure><img src="wallbox/04_match_live.png" width="340" height="640" style="image-rendering:pixelated;background:#0a0a0a;border:1px solid #333"><figcaption>Match live</figcaption></figure>
+<figure><img src="wallbox/05_polarity_test.png" width="340" height="640" style="image-rendering:pixelated;background:#0a0a0a;border:1px solid #333"><figcaption>Polarity test (first boot)</figcaption></figure>
+<figure><img src="wallbox/06_segment_exercise.png" width="340" height="640" style="image-rendering:pixelated;background:#0a0a0a;border:1px solid #333"><figcaption>Segment exercise (wartung)</figcaption></figure>
+<figure><img src="wallbox/07_connection_lost.png" width="340" height="640" style="image-rendering:pixelated;background:#0a0a0a;border:1px solid #333"><figcaption>Connection lost</figcaption></figure></div>
+
+<footer>
+  Generated by tools/make_mockups.py · WÄNGI · 1967 NEVER GIVE UP
+</footer>
+</body></html>

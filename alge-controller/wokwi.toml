@@ -1,0 +1,17 @@
+# Wokwi config for alge-controller (M5Stack Core2).
+#
+# Usage:
+#   1. Install the Wokwi VS Code extension (or use wokwi.com directly).
+#   2. Run `pio run` in this directory to build firmware.bin / firmware.elf.
+#   3. Open this folder in VS Code with the Wokwi extension active, or upload
+#      the .bin and diagram.json to wokwi.com.
+#
+# The Core2 is officially modeled in Wokwi — touchscreen, buttons, display,
+# IMU, vibration, and battery all work. ESP-NOW between two Wokwi tabs is
+# supported via the Wokwi Gateway / IoT plan; otherwise you can test each
+# device in isolation.
+
+[wokwi]
+version    = 1
+firmware   = '.pio/build/wokwi-cores3/firmware.bin'
+elf        = '.pio/build/wokwi-cores3/firmware.elf'

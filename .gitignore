@@ -1,0 +1,35 @@
+# PlatformIO build artefacts
+**/.pio/
+**/.pioenvs/
+**/.piolibdeps/
+*.bin
+*.elf
+*.map
+
+# IDE / tooling — contain absolute paths and per-machine state
+.vscode/
+.idea/
+*.code-workspace
+.cache/
+
+# Local-only credentials (gitignored on purpose). See *.example.h.
+**/credentials.h
+
+# Claude Code local settings
+.claude/
+
+# macOS / Linux junk
+.DS_Store
+*.swp
+*.swo
+Thumbs.db
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Build outputs not relevant for sharing
+*.lst
+*.disasm

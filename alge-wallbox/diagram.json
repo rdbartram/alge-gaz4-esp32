@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "author": "FC Waengi 1967 Anzeigetafel",
+  "editor": "wokwi",
+  "parts": [
+    {
+      "type": "board-esp32-s3-devkitc-1",
+      "id": "esp",
+      "top": 0, "left": 0,
+      "attrs": { "flash": "8", "psramType": "opi", "psramSize": "8" }
+    },
+    {
+      "type": "wokwi-ili9341",
+      "id": "lcd",
+      "top": -120, "left": 260,
+      "attrs": {}
+    },
+    {
+      "type": "wokwi-pushbutton",
+      "id": "btn14",
+      "top": 200, "left": 50,
+      "attrs": { "color": "red", "label": "IO14" }
+    },
+    {
+      "type": "wokwi-text",
+      "id": "lbl",
+      "top": -180, "left": 260,
+      "attrs": {
+        "text": "Sim uses ILI9341 (240x320). Real hw is ST7789 170x320.",
+        "fontSize": "10"
+      }
+    }
+  ],
+  "connections": [
+    [ "lcd:VCC",   "esp:3V3", "red", [] ],
+    [ "lcd:GND",   "esp:GND", "black", [] ],
+    [ "lcd:SDI",   "esp:11", "green", [] ],
+    [ "lcd:SCK",   "esp:12", "yellow", [] ],
+    [ "lcd:CS",    "esp:10", "purple", [] ],
+    [ "lcd:D/C",   "esp:13", "blue", [] ],
+    [ "lcd:RESET", "esp:15", "orange", [] ],
+    [ "lcd:LED",   "esp:16", "cyan", [] ],
+
+    [ "btn14:1.l", "esp:GND", "black", [] ],
+    [ "btn14:2.l", "esp:14",  "green", [] ]
+  ],
+  "dependencies": {}
+}

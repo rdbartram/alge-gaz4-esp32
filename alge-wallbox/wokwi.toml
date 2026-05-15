@@ -1,0 +1,19 @@
+# Wokwi config for alge-wallbox.
+#
+# Wokwi doesn't model the LilyGO T-Display-S3's 8-bit parallel display, so
+# the sim uses a plain ESP32-S3-DevKitC + SPI ST7789. Build the wokwi-s3
+# PlatformIO env (not the default lilygo env):
+#
+#   pio run -e wokwi-s3
+#
+# Then open this folder in VS Code with the Wokwi extension. The 'IO14'
+# button is wired to GPIO 14 just like real hardware.
+#
+# ESP-NOW between this device and the alge-controller works inside the
+# Wokwi Gateway / IoT plan. For free-tier testing, run each device in its
+# own tab and verify UI rendering in isolation.
+
+[wokwi]
+version  = 1
+firmware = '.pio/build/wokwi-s3/firmware.bin'
+elf      = '.pio/build/wokwi-s3/firmware.elf'
