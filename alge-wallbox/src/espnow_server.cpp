@@ -3,6 +3,7 @@
 // ============================================================================
 #include "espnow_server.h"
 #include "config.h"
+#include "credentials.h"
 #include "state.h"
 
 #include <Arduino.h>
@@ -11,6 +12,12 @@
 #include <esp_wifi.h>
 #include <Preferences.h>
 #include <string.h>
+
+// AES-128-CMAC keys shared with the controllers (credentials.h on both
+// sides must match). Broadcast (pairing handshake) traffic is
+// unencrypted by ESP-NOW protocol; unicast paired traffic is encrypted.
+static const uint8_t kEspNowPmk[16] = ESPNOW_PMK;
+static const uint8_t kEspNowLmk[16] = ESPNOW_LMK;
 
 namespace espnow_server {
 
@@ -66,9 +73,12 @@ void begin() {
         return;
     }
 
+    esp_now_set_pmk(kEspNowPmk);     // network-wide AES key
     esp_now_register_recv_cb(on_recv);
 
-    // Broadcast peer for pairing invites.
+    // Broadcast peer for pairing invites — stays unencrypted (ESP-NOW
+    // doesn't encrypt broadcasts). Unicast peers added below use the
+    // shared LMK so paired traffic is AES-128 CMAC encrypted.
     esp_now_peer_info_t peer = {};
     memcpy(peer.peer_addr, BROADCAST_MAC, 6);
     peer.channel = 0;
@@ -353,7 +363,8 @@ static bool register_peer(const uint8_t* mac) {
     esp_now_peer_info_t peer = {};
     memcpy(peer.peer_addr, mac, 6);
     peer.channel = 0;
-    peer.encrypt = false;
+    peer.encrypt = true;                // encrypted unicast with controllers
+    memcpy(peer.lmk, kEspNowLmk, 16);
     return esp_now_add_peer(&peer) == ESP_OK;
 }
 

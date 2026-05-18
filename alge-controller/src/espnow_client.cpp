@@ -3,6 +3,7 @@
 // ============================================================================
 #include "espnow_client.h"
 #include "config.h"
+#include "credentials.h"
 #include "state.h"
 
 #include <Arduino.h>
@@ -11,6 +12,12 @@
 #include <esp_wifi.h>
 #include <Preferences.h>
 #include <string.h>
+
+// AES-128-CMAC keys for ESP-NOW unicast encryption. Shared with the
+// wallbox via credentials.h. Broadcast (pairing handshake) traffic is
+// unencrypted by protocol.
+static const uint8_t kEspNowPmk[16] = ESPNOW_PMK;
+static const uint8_t kEspNowLmk[16] = ESPNOW_LMK;
 
 namespace espnow_client {
 
@@ -52,9 +59,15 @@ void begin() {
         return;
     }
 
+    // Set the network-wide PMK. Must be done after init, before adding
+    // any encrypted peers. Same key on both sides of the link.
+    esp_now_set_pmk(kEspNowPmk);
+
     esp_now_register_recv_cb(on_recv);
 
-    // Broadcast peer for pairing.
+    // Broadcast peer for pairing — has to stay unencrypted (ESP-NOW
+    // doesn't support encrypted broadcasts). Unicast peers added later
+    // via register_peer() use encrypt=true with the shared LMK.
     esp_now_peer_info_t peer = {};
     memcpy(peer.peer_addr, BROADCAST_MAC, 6);
     peer.channel = 0;
@@ -327,7 +340,8 @@ static bool register_peer(const uint8_t* mac) {
     esp_now_peer_info_t peer = {};
     memcpy(peer.peer_addr, mac, 6);
     peer.channel = 0;
-    peer.encrypt = false;
+    peer.encrypt = true;                // encrypted unicast with the wallbox
+    memcpy(peer.lmk, kEspNowLmk, 16);
     return esp_now_add_peer(&peer) == ESP_OK;
 }
 

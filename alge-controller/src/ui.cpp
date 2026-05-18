@@ -26,6 +26,7 @@ static bool     g_invalidate    = true;
 static bool     g_tick_redraw   = false;  // partial: clock + status only
 static uint32_t g_last_rendered_ms = 0;
 static uint32_t g_pairing_success_ms = 0;  // moment pair-mode first saw the wallbox
+static Screen   g_pairing_return = SCREEN_SETTINGS; // see open_pairing_screen()
 
 // Transient confirmation banner ("toast") drawn on top of any screen for
 // ~1.5 s after a fire-and-forget action (test commands, pair start,
@@ -200,7 +201,7 @@ void tick() {
             if (g_pairing_success_ms == 0) g_pairing_success_ms = now;
             if (now - g_pairing_success_ms > 1800) {
                 g_pairing_success_ms = 0;
-                go(g_screen_return);
+                go(g_pairing_return);
             }
         } else {
             g_pairing_success_ms = 0;
@@ -537,11 +538,18 @@ static void draw_match() {
                     &fonts::FreeSansBold18pt7b);
 
     // +/- buttons — pushed below the score row so they don't collide
-    // with the Font8 digits.
-    g_match_btn_h_dec = uih::draw_button( 10, 154, 40, 28, "-", COLOR_BG_DARK, COLOR_WARN);
-    g_match_btn_h_inc = uih::draw_button( 70, 154, 40, 28, "+", COLOR_BG_DARK, COLOR_SUCCESS);
-    g_match_btn_a_dec = uih::draw_button(210, 154, 40, 28, "-", COLOR_BG_DARK, COLOR_WARN);
-    g_match_btn_a_inc = uih::draw_button(270, 154, 40, 28, "+", COLOR_BG_DARK, COLOR_SUCCESS);
+    // with the Font8 digits. Hidden entirely during the pre-match
+    // countdown because there's nothing to score yet; zero rects keep
+    // the touch handler from picking up phantom hits in that band.
+    if (s.match_state == STATE_PRE_MATCH) {
+        g_match_btn_h_dec = g_match_btn_h_inc = {0, 0, 0, 0};
+        g_match_btn_a_dec = g_match_btn_a_inc = {0, 0, 0, 0};
+    } else {
+        g_match_btn_h_dec = uih::draw_button( 10, 154, 40, 28, "-", COLOR_BG_DARK, COLOR_WARN);
+        g_match_btn_h_inc = uih::draw_button( 70, 154, 40, 28, "+", COLOR_BG_DARK, COLOR_SUCCESS);
+        g_match_btn_a_dec = uih::draw_button(210, 154, 40, 28, "-", COLOR_BG_DARK, COLOR_WARN);
+        g_match_btn_a_inc = uih::draw_button(270, 154, 40, 28, "+", COLOR_BG_DARK, COLOR_SUCCESS);
+    }
 
     // State label — when a score exceeds 9, fold a "Tafel X:Y" note into
     // the line and recolour to warn. Avoids a stacked second row that
@@ -648,7 +656,11 @@ static void arm_long_press(int16_t x, int16_t y, int16_t w, int16_t h,
 
 static void handle_match_touch(int16_t x, int16_t y) {
     const auto& s = state::peek();
-    if (uih::point_in(g_match_btn_h_inc, x, y)) {
+    // During the pre-match countdown there's no match yet — score, score
+    // tap-to-edit and tap-clock-to-edit are all locked out so a stray
+    // tap can't change a result that hasn't started.
+    const bool is_pre = (s.match_state == STATE_PRE_MATCH);
+    if (!is_pre && uih::point_in(g_match_btn_h_inc, x, y)) {
         espnow_client::send_intent_score_delta(true, +1);
             vibe_short();
         arm_long_press(g_match_btn_h_inc.x, g_match_btn_h_inc.y,
@@ -657,12 +669,12 @@ static void handle_match_touch(int16_t x, int16_t y) {
             open_numpad("Torschütze Heim (Trikot-Nr.)", 0, 0, 99,
                         [](int j) { espnow_client::send_intent_register_goal(true, (uint8_t)j); });
         }
-    } else if (uih::point_in(g_match_btn_h_dec, x, y)) {
+    } else if (!is_pre && uih::point_in(g_match_btn_h_dec, x, y)) {
         espnow_client::send_intent_score_delta(true, -1);
             vibe_double();
         arm_long_press(g_match_btn_h_dec.x, g_match_btn_h_dec.y,
                        g_match_btn_h_dec.w, g_match_btn_h_dec.h, -1, true);
-    } else if (uih::point_in(g_match_btn_a_inc, x, y)) {
+    } else if (!is_pre && uih::point_in(g_match_btn_a_inc, x, y)) {
         espnow_client::send_intent_score_delta(false, +1);
             vibe_short();
         arm_long_press(g_match_btn_a_inc.x, g_match_btn_a_inc.y,
@@ -671,16 +683,16 @@ static void handle_match_touch(int16_t x, int16_t y) {
             open_numpad("Torschütze Gast (Trikot-Nr.)", 0, 0, 99,
                         [](int j) { espnow_client::send_intent_register_goal(false, (uint8_t)j); });
         }
-    } else if (uih::point_in(g_match_btn_a_dec, x, y)) {
+    } else if (!is_pre && uih::point_in(g_match_btn_a_dec, x, y)) {
         espnow_client::send_intent_score_delta(false, -1);
             vibe_double();
         arm_long_press(g_match_btn_a_dec.x, g_match_btn_a_dec.y,
                        g_match_btn_a_dec.w, g_match_btn_a_dec.h, -1, false);
-    } else if (uih::point_in(g_match_score_home, x, y)) {
+    } else if (!is_pre && uih::point_in(g_match_score_home, x, y)) {
         open_numpad("HEIM-Stand", s.home_score_real, 0, 99, numpad_set_home);
-    } else if (uih::point_in(g_match_score_away, x, y)) {
+    } else if (!is_pre && uih::point_in(g_match_score_away, x, y)) {
         open_numpad("GAST-Stand", s.away_score_real, 0, 99, numpad_set_away);
-    } else if (uih::point_in(g_match_btn_clock, x, y)) {
+    } else if (!is_pre && uih::point_in(g_match_btn_clock, x, y)) {
         open_numpad("Uhr (Min.)", s.clock_seconds / 60, 0, 120, numpad_set_clock);
     } else if (uih::point_in(g_match_btn_pause, x, y)) {
         if (s.clock_running) espnow_client::send_intent_simple(INTENT_PAUSE); else espnow_client::send_intent_simple(INTENT_RESUME);
@@ -1115,10 +1127,13 @@ static void handle_confirm_touch(int16_t x, int16_t y) {
 //  (long-press IO14) and auto-leaves to setup once the link is alive.
 // ============================================================================
 static uih::Rect g_pairing_btn_cancel;
+// g_pairing_return is declared near the top of the file alongside the
+// other tick()-touched globals so the auto-leave timer can see it
+// without a forward declaration.
 
 static void open_pairing_screen() {
     espnow_client::enter_pairing_mode();
-    g_screen_return = SCREEN_SETTINGS;
+    g_pairing_return = g_screen;
     go(SCREEN_PAIRING);
 }
 
@@ -1163,7 +1178,7 @@ static void draw_pairing() {
 
 static void handle_pairing_touch(int16_t x, int16_t y) {
     if (uih::point_in(g_pairing_btn_cancel, x, y)) {
-        go(g_screen_return);
+        go(g_pairing_return);
     }
 }
 
@@ -1464,7 +1479,9 @@ static void draw_numpad() {
     snprintf(val, sizeof(val), "%d", g_numpad_value);
     d.fillRoundRect(20, 30, DISPLAY_WIDTH - 40, 32, 6, 0x18C3);
     d.drawRoundRect(20, 30, DISPLAY_WIDTH - 40, 32, 6, COLOR_ACCENT);
-    d.setFont(&fonts::FreeSansBold18pt7b);
+    // 12pt sits comfortably inside the 32 px band with margin top + bottom;
+    // 18pt was still close to the outline despite being smaller than 24pt.
+    d.setFont(&fonts::FreeSansBold12pt7b);
     d.setTextColor(COLOR_TEXT, 0x18C3);
     d.setTextDatum(middle_center);
     d.drawString(val, DISPLAY_WIDTH / 2, 30 + 16);
