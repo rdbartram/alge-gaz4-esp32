@@ -25,6 +25,7 @@ static uint32_t g_screen_entered_ms = 0;
 static bool     g_invalidate    = true;
 static bool     g_tick_redraw   = false;  // partial: clock + status only
 static uint32_t g_last_rendered_ms = 0;
+static uint32_t g_pairing_success_ms = 0;  // moment pair-mode first saw the wallbox
 
 // Transient confirmation banner ("toast") drawn on top of any screen for
 // ~1.5 s after a fire-and-forget action (test commands, pair start,
@@ -124,6 +125,8 @@ static void draw_defaults();
 static void handle_defaults_touch(int16_t x, int16_t y);
 static void draw_confirm();
 static void handle_confirm_touch(int16_t x, int16_t y);
+static void draw_pairing();
+static void handle_pairing_touch(int16_t x, int16_t y);
 static void draw_link_banner();
 static void check_long_press();
 
@@ -186,6 +189,23 @@ void tick() {
     if (g_toast[0] && now > g_toast_until_ms) {
         g_toast[0] = '\0';
         g_invalidate = true;
+    }
+
+    // SCREEN_PAIRING: auto-leave after a brief success display once the
+    // wallbox starts heartbeating to us. Also invalidate every 500ms so
+    // the animated "…" dots show progress.
+    if (g_screen == SCREEN_PAIRING) {
+        const bool paired_now = espnow_client::is_paired() && state::link_live();
+        if (paired_now) {
+            if (g_pairing_success_ms == 0) g_pairing_success_ms = now;
+            if (now - g_pairing_success_ms > 1800) {
+                g_pairing_success_ms = 0;
+                go(g_screen_return);
+            }
+        } else {
+            g_pairing_success_ms = 0;
+            if (now - g_last_rendered_ms > 500) g_invalidate = true;
+        }
     }
 
     // Screen-specific clock-driven invalidations.
@@ -264,6 +284,7 @@ static void draw() {
     case SCREEN_HISTORY:       draw_history(); break;
     case SCREEN_DEFAULTS:      draw_defaults(); break;
     case SCREEN_CONFIRM:       draw_confirm(); break;
+    case SCREEN_PAIRING:       draw_pairing(); break;
     }
 }
 
@@ -296,6 +317,7 @@ static void handle_touch(int16_t x, int16_t y) {
     case SCREEN_HISTORY:       handle_history_touch(x, y); break;
     case SCREEN_DEFAULTS:      handle_defaults_touch(x, y); break;
     case SCREEN_CONFIRM:       handle_confirm_touch(x, y); break;
+    case SCREEN_PAIRING:       handle_pairing_touch(x, y); break;
     }
     invalidate();
 }
@@ -745,14 +767,27 @@ static void draw_halftime() {
                          ? COLOR_WARN : COLOR_TEXT,
                      &fonts::FreeSansBold24pt7b);
 
-    char resume_label[20];
-    snprintf(resume_label, sizeof(resume_label),
-             "2.HZ ab %u:00", state::defaults().half_minutes);
-    g_ht_btn_resume_at_45 = uih::draw_button(10, 204, 150, 30,
-        from_et ? "ET2 ab 105:00" : resume_label, COLOR_DIM, COLOR_TEXT);
-    g_ht_btn_start_h2 = uih::draw_button(170, 204, 140, 30,
-        from_et ? "ET2 STARTEN" : "2.HZ STARTEN",
-        COLOR_PRIMARY, COLOR_TEXT, true);
+    // Single big "start second half" button. In football the 2.HZ
+    // always begins at the preset's half-time mark — 45:00 for adults,
+    // 20:00 for F-Junioren, 105:00 for ET2 — never from "wherever the
+    // clock happened to stop". The label shows the target time so the
+    // operator can confirm before tapping. The Halbzeit-Länge default
+    // only applies to "Freundschaftsspiel" (preset.custom == true);
+    // every other preset uses its own half_minutes.
+    char start_label[24];
+    if (from_et) {
+        snprintf(start_label, sizeof(start_label), "ET 2 ab 105:00");
+    } else {
+        const auto& p = matchmodes::get(state::peek().preset_idx);
+        const uint8_t half_min = p.custom ? state::defaults().half_minutes
+                                          : p.half_minutes;
+        snprintf(start_label, sizeof(start_label),
+                 "2.HZ ab %u:00", (unsigned)half_min);
+    }
+    g_ht_btn_start_h2 = uih::draw_button(10, 204, DISPLAY_WIDTH - 20, 30,
+        start_label, COLOR_PRIMARY, COLOR_TEXT, true);
+    // No longer used — left zeroed so touch handler ignores it cleanly.
+    g_ht_btn_resume_at_45 = {0, 0, 0, 0};
 }
 
 // Partial redraw for the per-second halftime tick — only the pause
@@ -775,18 +810,20 @@ static void draw_halftime_tick() {
 }
 
 static void handle_halftime_touch(int16_t x, int16_t y) {
+    if (!uih::point_in(g_ht_btn_start_h2, x, y)) return;
     const bool from_et = (state::peek().match_state == STATE_ET_HALFTIME);
-    if (uih::point_in(g_ht_btn_resume_at_45, x, y)) {
-        if (from_et) espnow_client::send_intent_start_half_2(true, 105u * 60u);
-        else         espnow_client::send_intent_start_half_2(true, (uint16_t)state::defaults().half_minutes * 60);
-        vibe_long();
-        go(SCREEN_MATCH);
-    } else if (uih::point_in(g_ht_btn_start_h2, x, y)) {
-        if (from_et) espnow_client::send_intent_start_half_2(true, 105u * 60u);
-        else         espnow_client::send_intent_start_half_2(false, 0);   // resume from half1_end_seconds
-        vibe_long();
-        go(SCREEN_MATCH);
+    if (from_et) {
+        // ET2 always starts at 105:00; the wallbox dispatches via the
+        // STATE_ET_HALFTIME special-case inside INTENT_START_HALF_2.
+        espnow_client::send_intent_start_half_2(true, 105u * 60u);
+    } else {
+        const auto& p = matchmodes::get(state::peek().preset_idx);
+        const uint16_t half_min = p.custom ? state::defaults().half_minutes
+                                           : p.half_minutes;
+        espnow_client::send_intent_start_half_2(true, (uint16_t)(half_min * 60));
     }
+    vibe_long();
+    go(SCREEN_MATCH);
 }
 
 // ============================================================================
@@ -1073,6 +1110,64 @@ static void handle_confirm_touch(int16_t x, int16_t y) {
 }
 
 // ============================================================================
+//  PAIRING — "Neu koppeln" flow. Shown after the user kicks off pairing
+//  on the Settings screen. Renders a hint about the wallbox-side action
+//  (long-press IO14) and auto-leaves to setup once the link is alive.
+// ============================================================================
+static uih::Rect g_pairing_btn_cancel;
+
+static void open_pairing_screen() {
+    espnow_client::enter_pairing_mode();
+    g_screen_return = SCREEN_SETTINGS;
+    go(SCREEN_PAIRING);
+}
+
+static void draw_pairing() {
+    auto& d = M5.Display;
+    uih::draw_header("PAIRING");
+
+    const bool paired_now = espnow_client::is_paired() && state::link_live();
+
+    if (paired_now) {
+        uih::centre_text(DISPLAY_WIDTH / 2, 60, "Verbunden!",
+                         COLOR_SUCCESS, &fonts::efontJA_16);
+        char mac[28];
+        const uint8_t* m = espnow_client::paired_mac();
+        snprintf(mac, sizeof(mac), "%02X:%02X:%02X:%02X:%02X:%02X",
+                 m[0], m[1], m[2], m[3], m[4], m[5]);
+        uih::centre_text(DISPLAY_WIDTH / 2, 90, mac, COLOR_DIM, &fonts::FreeSans9pt7b);
+        uih::centre_text(DISPLAY_WIDTH / 2, 130, "Zurück in 2 Sek.",
+                         COLOR_DIM, &fonts::efontJA_14);
+    } else {
+        uih::centre_text(DISPLAY_WIDTH / 2, 50, "Suche Wallbox…",
+                         COLOR_ACCENT, &fonts::efontJA_16);
+        uih::centre_text(DISPLAY_WIDTH / 2, 96, "Halte IO14 am",
+                         COLOR_TEXT, &fonts::efontJA_14);
+        uih::centre_text(DISPLAY_WIDTH / 2, 116, "Wallbox 3 Sek.",
+                         COLOR_TEXT, &fonts::efontJA_14);
+        uih::centre_text(DISPLAY_WIDTH / 2, 152, "um zu akzeptieren.",
+                         COLOR_DIM, &fonts::efontJA_14);
+        // Animated dots so the user can tell the controller is still
+        // broadcasting and not just frozen.
+        static int phase = 0;
+        phase = (phase + 1) % 4;
+        char dots[5] = "   ";
+        for (int i = 0; i < phase && i < 3; ++i) dots[i] = '.';
+        uih::centre_text(DISPLAY_WIDTH / 2, 184, dots, COLOR_ACCENT,
+                         &fonts::FreeSansBold18pt7b);
+    }
+
+    g_pairing_btn_cancel = uih::draw_button(10, 204, DISPLAY_WIDTH - 20, 30,
+        "< ABBRECHEN", COLOR_PRIMARY, COLOR_TEXT, true);
+}
+
+static void handle_pairing_touch(int16_t x, int16_t y) {
+    if (uih::point_in(g_pairing_btn_cancel, x, y)) {
+        go(g_screen_return);
+    }
+}
+
+// ============================================================================
 //  SETTINGS
 // ============================================================================
 static uih::Rect g_set_btn_repair, g_set_btn_polarity, g_set_btn_exercise;
@@ -1134,8 +1229,10 @@ static void draw_settings() {
 
 static void handle_settings_touch(int16_t x, int16_t y) {
     if (uih::point_in(g_set_btn_repair, x, y)) {
-        espnow_client::enter_pairing_mode();
-        show_toast("Kopplung läuft…");
+        // Take the user to a dedicated pairing screen so they get the
+        // "long-press IO14 on the wallbox" hint instead of just a toast
+        // and an unchanged Settings page.
+        open_pairing_screen();
     } else if (uih::point_in(g_set_btn_polarity, x, y)) {
         espnow_client::send_intent_simple(INTENT_POLARITY_TEST);
         show_toast("Polaritäts-Test gesendet");
@@ -1160,6 +1257,7 @@ static void handle_settings_touch(int16_t x, int16_t y) {
         go(g_screen_return);
     } else if (uih::point_in(g_set_btn_history, x, y)) {
         g_history_scroll = 0;
+        espnow_client::request_history();
         go(SCREEN_HISTORY);
     } else if (uih::point_in(g_set_btn_defaults, x, y)) {
         // Snapshot the wallbox's current Vorgaben into our local edit
@@ -1350,39 +1448,57 @@ static void draw_numpad() {
     auto& d = M5.Display;
     uih::draw_header(g_numpad_label);
 
-    // Value display
+    // Vertical budget on the 240 px display:
+    //   0..28   header
+    //   30..62  value box (h=32) — 18 pt number centred via middle_center
+    //   68..194 keypad: y0=68, kh=30, gap=6, 4 rows = 4*30+3*6 = 138 ends y=206
+    //   wait that overflows — use kh=28 → 4*28+3*6=130 ends y=198
+    //   204..234 action row (h=30)
+    // Previous build had the action row landing at y=220..248 which
+    // clipped the OK / Abbrechen labels off the bottom of the screen.
+    //
+    // For the value box: draw centred with middle_center datum so the
+    // number sits visually inside the outlined band rather than the
+    // top_center "text descends below" layout we had before.
     char val[8];
     snprintf(val, sizeof(val), "%d", g_numpad_value);
-    d.fillRoundRect(40, 32, DISPLAY_WIDTH - 80, 36, 6, 0x18C3);
-    d.drawRoundRect(40, 32, DISPLAY_WIDTH - 80, 36, 6, COLOR_ACCENT);
-    uih::centre_text(DISPLAY_WIDTH / 2, 40, val, COLOR_TEXT,
-                     &fonts::FreeSansBold18pt7b);
+    d.fillRoundRect(20, 30, DISPLAY_WIDTH - 40, 32, 6, 0x18C3);
+    d.drawRoundRect(20, 30, DISPLAY_WIDTH - 40, 32, 6, COLOR_ACCENT);
+    d.setFont(&fonts::FreeSansBold18pt7b);
+    d.setTextColor(COLOR_TEXT, 0x18C3);
+    d.setTextDatum(middle_center);
+    d.drawString(val, DISPLAY_WIDTH / 2, 30 + 16);
 
-    // 4x3 keypad — compact so the action row at y=210 has clearance,
-    // horizontally centred on the canvas.
-    const int kw = 58, kh = 26, gap = 4;
+    // 4-row × 3-col keypad — buttons ~96 × 28 (still ~65 % bigger touch
+    // target than the original 58 × 26). Index by digit value, see the
+    // store-vs-lookup bug fix in the comment below.
+    const int kw = 96, kh = 28, gap = 6;
     const int grid_w = 3 * kw + 2 * gap;
     const int kx0 = (DISPLAY_WIDTH - grid_w) / 2;
-    const int ky0 = 76;
-    const char* digits = "123456789";
+    const int ky0 = 68;
     for (int i = 0; i < 9; ++i) {
+        const int digit = i + 1;
         const int row = i / 3, col = i % 3;
-        char ch[2] = { digits[i], 0 };
-        g_np_digits[i] = uih::draw_button(
+        char ch[2] = { (char)('0' + digit), 0 };
+        g_np_digits[digit] = uih::draw_button(
             kx0 + col * (kw + gap), ky0 + row * (kh + gap),
-            kw, kh, ch, COLOR_BG_DARK, COLOR_TEXT);
+            kw, kh, ch, COLOR_BG_DARK, COLOR_TEXT, /*large=*/true);
     }
-    // bottom row: clear, 0, back
-    g_np_btn_clear  = uih::draw_button(kx0,             ky0 + 3 * (kh + gap), kw, kh, "C",  COLOR_BG_DARK, COLOR_WARN);
-    g_np_digits[0]  = uih::draw_button(kx0 + (kw+gap),  ky0 + 3 * (kh + gap), kw, kh, "0",  COLOR_BG_DARK, COLOR_TEXT);
-    g_np_btn_back   = uih::draw_button(kx0 + 2*(kw+gap),ky0 + 3 * (kh + gap), kw, kh, "<-", COLOR_BG_DARK, COLOR_WARN);
+    // bottom row: clear, 0, back — same width as digits.
+    const int row_bottom_y = ky0 + 3 * (kh + gap);
+    g_np_btn_clear = uih::draw_button(kx0,              row_bottom_y, kw, kh,
+                                      "C",  COLOR_BG_DARK, COLOR_WARN, true);
+    g_np_digits[0] = uih::draw_button(kx0 + (kw + gap), row_bottom_y, kw, kh,
+                                      "0",  COLOR_BG_DARK, COLOR_TEXT, true);
+    g_np_btn_back  = uih::draw_button(kx0 + 2 * (kw + gap), row_bottom_y, kw, kh,
+                                      "<-", COLOR_BG_DARK, COLOR_WARN, true);
 
-    // Action row at y=210 — keypad ends at y=76 + 3*30 + 26 = 192, so we
-    // have an 18px gap which keeps tap targets distinct.
-    g_np_btn_cancel = uih::draw_button(10,             210, 130, 24, "Abbrechen",
-                                       COLOR_BG_DARK, COLOR_WARN);
-    g_np_btn_ok     = uih::draw_button(DISPLAY_WIDTH - 140, 210, 130, 24, "OK",
-                                       COLOR_SUCCESS, COLOR_BG_DARK);
+    // Action row at the very bottom.
+    const int action_y = row_bottom_y + kh + 4;   // = 68 + 4*34 + 4 = 208
+    g_np_btn_cancel = uih::draw_button(8,            action_y, 144, 28,
+                                       "Abbrechen", COLOR_BG_DARK, COLOR_WARN, true);
+    g_np_btn_ok     = uih::draw_button(DISPLAY_WIDTH - 152, action_y, 144, 28,
+                                       "OK", COLOR_SUCCESS, COLOR_BG_DARK, true);
 }
 
 static void handle_numpad_touch(int16_t x, int16_t y) {
@@ -1431,25 +1547,54 @@ static void draw_history() {
     auto& d = M5.Display;
     uih::draw_header("VERLAUF");
 
-    const uint8_t n = state::history_count();
-    if (n == 0) {
+    const uint8_t total = state::history_expected();
+    const uint8_t got   = state::history_received();
+    if (state::history_count() == 0) {
         uih::centre_text(DISPLAY_WIDTH / 2, 100, "Keine Matches gespeichert.",
                          COLOR_DIM, &fonts::efontJA_14);
+    } else if (got == 0) {
+        // Request landed, response still in flight (or wallbox is silent).
+        uih::centre_text(DISPLAY_WIDTH / 2, 100, "Lade von Tafel…",
+                         COLOR_ACCENT, &fonts::efontJA_14);
     } else {
-        // v2: full history detail (per-goal lookup, opponent names) lives
-        // only on the wallbox right now — broadcasting every entry on
-        // every MSG_STATE would balloon the packet. Show the count and a
-        // hint until we add a dedicated MSG_HISTORY for on-demand
-        // retrieval.
-        char top[40];
-        snprintf(top, sizeof(top), "%u Match%s gespeichert", n, n == 1 ? "" : "es");
-        uih::centre_text(DISPLAY_WIDTH / 2, 90, top, COLOR_TEXT, &fonts::efontJA_16);
-        uih::centre_text(DISPLAY_WIDTH / 2, 130,
-                         "Details bald über die Tafel abrufbar.",
-                         COLOR_DIM, &fonts::efontJA_14);
-        g_hist_btn_up   = { 0, 0, 0, 0 };
-        g_hist_btn_down = { 0, 0, 0, 0 };
+        d.setTextColor(COLOR_TEXT, COLOR_BG_DARK);
+        d.setFont(&fonts::efontJA_14);
+        d.setTextDatum(top_left);
+        const int per_page = 5;
+        const int row_h = 32;
+        for (int i = 0; i < per_page; ++i) {
+            const int idx = g_history_scroll + i;
+            if (idx >= got) break;
+            const auto& h = state::history_entry(idx);
+            const int y = HEADER_HEIGHT + 6 + i * row_h;
+            d.fillRoundRect(8, y, DISPLAY_WIDTH - 60, row_h - 4, 4, 0x10A2);
+            d.drawRoundRect(8, y, DISPLAY_WIDTH - 60, row_h - 4, 4, COLOR_DIM);
+            const auto& p = matchmodes::get(h.preset_idx);
+            const uint16_t mm = (h.final_clock_seconds / 60) % 100;
+            const uint16_t ss = h.final_clock_seconds % 60;
+            char line1[40], line2[40];
+            snprintf(line1, sizeof(line1), "%u-%u vs %s",
+                     h.home_score_real, h.away_score_real, h.opponent);
+            snprintf(line2, sizeof(line2), "%s . %02u:%02u",
+                     p.label, mm, ss);
+            d.setTextColor(COLOR_TEXT, COLOR_BG_DARK);
+            d.drawString(line1, 14, y + 4);
+            d.setTextColor(COLOR_DIM, COLOR_BG_DARK);
+            d.drawString(line2, 14, y + 16);
+        }
+        g_hist_btn_up   = uih::draw_button(DISPLAY_WIDTH - 44, 36,  36, 32, "^",
+                                           COLOR_DIM, COLOR_TEXT);
+        g_hist_btn_down = uih::draw_button(DISPLAY_WIDTH - 44, 72,  36, 32, "v",
+                                           COLOR_DIM, COLOR_TEXT);
+        // Progress hint when we haven't received all expected entries yet.
+        if (got < total) {
+            char prog[24];
+            snprintf(prog, sizeof(prog), "Lade %u/%u…", got, total);
+            uih::centre_text(DISPLAY_WIDTH / 2, 196, prog, COLOR_ACCENT,
+                             &fonts::FreeSans9pt7b);
+        }
     }
+    (void)total;
     g_hist_btn_clear = uih::draw_button(10,  210, 140, 26, "Verlauf löschen",
                                         COLOR_BG_DARK, COLOR_WARN);
     g_hist_btn_back  = uih::draw_button(170, 210, 140, 26, "< Zurück",
@@ -1513,7 +1658,10 @@ static void draw_defaults() {
     char b1[8], b2[8];
     snprintf(b1, sizeof(b1), "%u min", g_defaults_edit.half_minutes);
     snprintf(b2, sizeof(b2), "%u min", g_defaults_edit.pause_minutes);
-    value_row( 60, "Halbzeit-Länge:", b1, g_def_half_dec,  g_def_half_inc);
+    // "Halbzeit-Länge" now only applies to the Freundschaftsspiel preset
+    // (every other preset uses its own half_minutes from matchmodes.cpp).
+    // Label tightened to "HZ Freund." so it's clear which.
+    value_row( 60, "HZ Freund.:", b1, g_def_half_dec,  g_def_half_inc);
     value_row( 98, "Halbzeitpause:",   b2, g_def_pause_dec, g_def_pause_inc);
 
     // Toggle rows match the column span of the value rows above

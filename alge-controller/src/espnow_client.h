@@ -46,4 +46,7 @@ void send_intent_set_defaults(uint8_t half_min, uint8_t pause_min,
 // Ask the wallbox for a fresh MSG_STATE + MSG_DEFAULTS now.
 void request_full_state();
 
+// Ask the wallbox to send the saved match history (N MSG_HISTORY packets).
+void request_history();
+
 } // namespace espnow_client

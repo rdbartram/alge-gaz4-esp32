@@ -19,9 +19,11 @@ static constexpr uint32_t PAIRING_TIMEOUT_MS = 30000;
 static constexpr uint32_t STATE_HEARTBEAT_MS = 1000;
 
 struct Peer {
-    uint8_t mac[6];
-    bool    in_use;
-    int8_t  last_rssi;
+    uint8_t  mac[6];
+    bool     in_use;
+    int8_t   last_rssi;
+    uint16_t last_intent_seq;   // last intent sequence applied (dedup)
+    bool     has_intent_seq;    // false until first intent observed
 };
 
 static Peer    g_peers[MAX_PAIRED_PEERS];
@@ -171,6 +173,40 @@ void broadcast_state_if_stale() {
 
 int8_t last_rx_rssi() { return g_last_rx_rssi; }
 
+uint32_t pairing_remaining_ms() {
+    if (!g_pairing_mode) return 0;
+    const uint32_t elapsed = millis() - g_pairing_started_ms;
+    return (elapsed >= PAIRING_TIMEOUT_MS) ? 0 : (PAIRING_TIMEOUT_MS - elapsed);
+}
+
+// Send all stored matches as a sequence of MSG_HISTORY packets, one per
+// entry. Triggered by a paired controller's INTENT_REQUEST_HISTORY.
+void send_history_to(const uint8_t* mac) {
+    const uint8_t total = wb_state::history_count();
+    for (uint8_t i = 0; i < total; ++i) {
+        const auto& h = wb_state::history(i);
+        ScoreboardMessage msg = {};
+        msg.msg_type = MSG_HISTORY;
+        msg.sequence = ++g_tx_seq;
+        msg.rssi     = g_last_rx_rssi;
+        msg.body.history.index               = i;
+        msg.body.history.total               = total;
+        msg.body.history.timestamp_unix      = h.timestamp_unix;
+        msg.body.history.preset_idx          = h.preset_idx;
+        msg.body.history.home_score_real     = h.home_score_real;
+        msg.body.history.away_score_real     = h.away_score_real;
+        msg.body.history.final_clock_seconds = h.final_clock_seconds;
+        msg.body.history.goal_count          = h.goal_count;
+        memcpy(msg.body.history.opponent, h.opponent,
+               sizeof(msg.body.history.opponent));
+        scoreboard_msg_sign(&msg);
+        esp_now_send(mac, (const uint8_t*)&msg, sizeof(msg));
+        // Brief spacer so the receiver's RX queue doesn't drop packets
+        // when we burst all 5 in a row.
+        delay(20);
+    }
+}
+
 void factory_reset() {
     Preferences prefs;
     prefs.begin(NVS_NAMESPACE, false);
@@ -213,6 +249,20 @@ static void on_recv(const esp_now_recv_info_t* info, const uint8_t* data, int le
 }
 
 static void handle_intent(const ScoreboardMessage& msg, const uint8_t* from) {
+    const int idx = find_peer(from);
+    if (idx < 0) return;   // already filtered in on_recv but belt-and-braces.
+
+    // Replay dedup: each peer ships monotonic sequence numbers. If we've
+    // already applied this one (e.g. a retransmit), ACK again but don't
+    // mutate state. Catches double-applies on flaky links.
+    Peer& peer = g_peers[idx];
+    if (peer.has_intent_seq && msg.sequence == peer.last_intent_seq) {
+        send_intent_ack(from, msg.sequence, true);
+        return;
+    }
+    peer.last_intent_seq = msg.sequence;
+    peer.has_intent_seq  = true;
+
     wb_state::note_intent_received();
     const bool changed = wb_state::apply_intent(msg.body.intent);
 
@@ -224,9 +274,10 @@ static void handle_intent(const ScoreboardMessage& msg, const uint8_t* from) {
         // 1Hz heartbeat tick.
         broadcast_state_now();
     } else if (msg.body.intent.intent_type == INTENT_REQUEST_FULL) {
-        // Controller wants a fresh snapshot (e.g. it just booted).
         broadcast_state_now();
         broadcast_defaults_now();
+    } else if (msg.body.intent.intent_type == INTENT_REQUEST_HISTORY) {
+        send_history_to(from);
     } else if (msg.body.intent.intent_type == INTENT_SET_DEFAULTS) {
         broadcast_defaults_now();
         broadcast_state_now();

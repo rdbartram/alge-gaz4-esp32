@@ -38,6 +38,14 @@ void broadcast_state_now();
 void broadcast_defaults_now();
 void broadcast_state_if_stale();   // every ~1s heartbeat
 
+// Pairing-mode countdown for the UI. Returns 0 when not in pairing mode,
+// otherwise the milliseconds left until the window auto-closes.
+uint32_t pairing_remaining_ms();
+
+// Send the full history (N MSG_HISTORY packets, one per entry) back to
+// a specific peer. Called by the intent handler on INTENT_REQUEST_HISTORY.
+void send_history_to(const uint8_t* mac);
+
 void factory_reset();          // wipe NVS and reboot
 
 int8_t last_rx_rssi();

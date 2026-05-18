@@ -148,9 +148,12 @@ void handle_button() {
             // Long press during polarity test = NOT OK, instruct rotation
             Serial.println("[main] polarity reported BAD - rotate wall-box 180");
             wb_state::set_polarity_ok(false);
-            // Stay in polarity-test mode; instruct rotate physically
         } else {
-            wb_maintenance::run_blank_burst();
+            // Open the pairing window so a new (or spare) controller
+            // can join. Blank-burst is reachable through the controller
+            // Settings (INTENT_BLANK) so this slot is free.
+            Serial.println("[main] entering pairing mode for 30s");
+            espnow_server::enter_pairing_mode();
         }
         break;
     case wb_button::VERY_LONG:

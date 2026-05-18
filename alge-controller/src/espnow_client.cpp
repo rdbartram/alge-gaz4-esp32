@@ -220,6 +220,11 @@ void request_full_state() {
     send_intent_simple(INTENT_REQUEST_FULL);
 }
 
+void request_history() {
+    state::history_request_reset();
+    send_intent_simple(INTENT_REQUEST_HISTORY);
+}
+
 // ============================================================================
 //  Receive path
 // ============================================================================
@@ -243,6 +248,11 @@ static void on_recv(const esp_now_recv_info_t* info, const uint8_t* data, int le
     case MSG_DEFAULTS:
         if (g_have_pair && memcmp(from, g_wallbox_mac, 6) == 0) {
             handle_defaults(msg);
+        }
+        break;
+    case MSG_HISTORY:
+        if (g_have_pair && memcmp(from, g_wallbox_mac, 6) == 0) {
+            state::update_from_history(msg.body.history);
         }
         break;
     case MSG_PAIRING_REQ:

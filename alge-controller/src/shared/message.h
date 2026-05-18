@@ -31,6 +31,7 @@ enum MessageType : uint8_t {
     MSG_PAIRING_REQ  = 0x04,  // controller -> wallbox  (please add me)
     MSG_PAIRING_ACK  = 0x05,  // wallbox -> controller  (accepted / rejected)
     MSG_INTENT_ACK   = 0x06,  // wallbox -> controller  (intent applied/ignored)
+    MSG_HISTORY      = 0x07,  // wallbox -> controller  (one entry per packet)
 };
 
 // ----- Match states -------------------------------------------------------
@@ -82,6 +83,7 @@ enum IntentType : uint8_t {
     INTENT_SET_DEFAULTS      = 0x18,  // .defaults populated
     INTENT_REQUEST_FULL      = 0x19,  // controller asks for fresh MSG_STATE + MSG_DEFAULTS
     INTENT_CANCEL_PRE_MATCH  = 0x1A,  // abort countdown back to IDLE
+    INTENT_REQUEST_HISTORY   = 0x1B,  // wallbox replies with N MSG_HISTORY packets
 };
 
 // ----- Pairing rejection reasons -----------------------------------------
@@ -162,6 +164,21 @@ struct AckPayload {
     uint8_t  reserved;
 };
 
+// ---- History entry — one MSG_HISTORY packet per saved match. The
+// wallbox sends `total` packets in response to INTENT_REQUEST_HISTORY;
+// the controller assembles them by `index`.
+struct HistoryPayload {
+    uint8_t  index;                   // 0..total-1
+    uint8_t  total;                   // wallbox's history_count snapshot
+    uint32_t timestamp_unix;
+    uint8_t  preset_idx;
+    uint8_t  home_score_real;
+    uint8_t  away_score_real;
+    uint16_t final_clock_seconds;
+    uint8_t  goal_count;
+    char     opponent[24];
+};
+
 // ---- Wrapper -------------------------------------------------------------
 // Single ESP-NOW packet shape. The active body field depends on msg_type.
 // raw[80] inside the union sets a floor so all variants are the same size,
@@ -180,6 +197,7 @@ struct ScoreboardMessage {
         DefaultsPayload defaults;
         PairingPayload  pairing;
         AckPayload      ack;
+        HistoryPayload  history;
         uint8_t         raw[80];
     } body;
 

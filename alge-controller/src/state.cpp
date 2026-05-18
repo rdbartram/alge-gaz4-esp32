@@ -11,6 +11,13 @@ namespace state {
 static Match    g_match;
 static Defaults g_defaults;
 
+// Match-history cache. Filled in by update_from_history() in response to
+// INTENT_REQUEST_HISTORY → the wallbox streams one MSG_HISTORY packet
+// per stored entry.
+static HistoryEntry g_history[HISTORY_CACHE_MAX];
+static uint8_t      g_history_received = 0;
+static uint8_t      g_history_expected = 0;
+
 static uint8_t  g_history_count = 0;
 static bool     g_can_undo      = false;
 static bool     g_pairing_mode  = false;
@@ -64,6 +71,33 @@ void update_from_defaults(const DefaultsPayload& d) {
     g_defaults.pause_minutes          = d.pause_minutes;
     g_defaults.auto_blank_after_match = (d.auto_blank_after_match != 0);
     g_defaults.prompt_scorer_on_goal  = (d.prompt_scorer_on_goal  != 0);
+}
+
+void update_from_history(const HistoryPayload& h) {
+    if (h.index >= HISTORY_CACHE_MAX) return;
+    HistoryEntry& e = g_history[h.index];
+    e.timestamp_unix      = h.timestamp_unix;
+    e.preset_idx          = h.preset_idx;
+    e.home_score_real     = h.home_score_real;
+    e.away_score_real     = h.away_score_real;
+    e.final_clock_seconds = h.final_clock_seconds;
+    e.goal_count          = h.goal_count;
+    memcpy(e.opponent, h.opponent, sizeof(e.opponent));
+    g_history_expected = h.total;
+    if (g_history_received < HISTORY_CACHE_MAX) g_history_received++;
+}
+
+void history_request_reset() {
+    g_history_received = 0;
+    g_history_expected = 0;
+    memset(g_history, 0, sizeof(g_history));
+}
+
+uint8_t history_received() { return g_history_received; }
+uint8_t history_expected() { return g_history_expected; }
+const HistoryEntry& history_entry(uint8_t idx) {
+    if (idx >= HISTORY_CACHE_MAX) idx = 0;
+    return g_history[idx];
 }
 
 void note_msg_received() { g_last_msg_ms = millis(); }

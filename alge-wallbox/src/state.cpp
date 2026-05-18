@@ -475,6 +475,17 @@ bool apply_intent(const IntentPayload& it) {
 //  Main-loop tick — drives the clock when running.
 // ============================================================================
 void tick(uint32_t dt_ms) {
+    // Auto-sync the wallbox display mode to whatever the match state
+    // says. Skipped for the modes that own the screen explicitly
+    // (boot, pairing, polarity test, segment exercise, blank burst,
+    // error, connection lost) — those toggle themselves on/off.
+    if (g_wb_mode == WB_PAIRED_IDLE || g_wb_mode == WB_MATCH_LIVE) {
+        const bool live = (g_match.match_state != STATE_IDLE &&
+                           g_match.match_state != STATE_SETUP);
+        const WallboxMode want = live ? WB_MATCH_LIVE : WB_PAIRED_IDLE;
+        if (g_wb_mode != want) set_wb_mode(want);
+    }
+
     if (g_match.match_state == STATE_ENDED &&
         g_defaults.auto_blank_after_match &&
         !g_ended_blank_fired &&

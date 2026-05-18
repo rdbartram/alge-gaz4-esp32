@@ -50,13 +50,34 @@ struct Defaults {
     bool    prompt_scorer_on_goal;
 };
 
+// Compact history entry — what the wallbox sends per MSG_HISTORY packet.
+// (Local copy of HistoryPayload fields so UI code doesn't have to reach
+// into the wire-format struct directly.)
+struct HistoryEntry {
+    uint32_t timestamp_unix;
+    uint8_t  preset_idx;
+    uint8_t  home_score_real;
+    uint8_t  away_score_real;
+    uint16_t final_clock_seconds;
+    uint8_t  goal_count;
+    char     opponent[24];
+};
+constexpr uint8_t HISTORY_CACHE_MAX = 5;
+
 // ---- Lifecycle ---------------------------------------------------------
 void begin();
 
 // ---- Update from received protocol messages ----------------------------
 void update_from_state(const StatePayload& s, int8_t rssi);
 void update_from_defaults(const DefaultsPayload& d);
+void update_from_history(const HistoryPayload& h);
 void note_msg_received();            // bumps last_msg_ms
+
+// ---- History detail cache (filled by INTENT_REQUEST_HISTORY) ----------
+void          history_request_reset(); // clear cache before a fresh request
+uint8_t       history_received();      // how many entries have arrived
+uint8_t       history_expected();      // wallbox-reported total
+const HistoryEntry& history_entry(uint8_t idx);
 
 // ---- UI-side reads -----------------------------------------------------
 const Match& peek();
