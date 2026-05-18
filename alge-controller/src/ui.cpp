@@ -485,6 +485,7 @@ static const char* match_state_label(MatchState s) {
     case STATE_EXTRA_TIME_2:     return "VERLÄNGERUNG 2.HZ";
     case STATE_PAUSED_ET:        return "VERLÄNGERUNG . PAUSE";
     case STATE_PRE_MATCH:        return "COUNTDOWN ZUM ANSTOSS";
+    case STATE_PRE_EXTRA_TIME:   return "VERLÄNGERUNG STARTET";
     default:                     return "MATCH";
     }
 }
@@ -541,7 +542,8 @@ static void draw_match() {
     // with the Font8 digits. Hidden entirely during the pre-match
     // countdown because there's nothing to score yet; zero rects keep
     // the touch handler from picking up phantom hits in that band.
-    if (s.match_state == STATE_PRE_MATCH) {
+    if (s.match_state == STATE_PRE_MATCH ||
+        s.match_state == STATE_PRE_EXTRA_TIME) {
         g_match_btn_h_dec = g_match_btn_h_inc = {0, 0, 0, 0};
         g_match_btn_a_dec = g_match_btn_a_inc = {0, 0, 0, 0};
     } else {
@@ -578,14 +580,15 @@ static void draw_match() {
     // time has its own halftime — the button switches to "ET HALBZEIT"
     // during ET1, and only the 2nd-half-of-extra-time ends the match.
     const auto ms = s.match_state;
-    const bool pre_match = (ms == STATE_PRE_MATCH);
+    const bool pre_any   = (ms == STATE_PRE_MATCH ||
+                            ms == STATE_PRE_EXTRA_TIME);
     const bool in_h1     = (ms == STATE_HALF_1 || ms == STATE_PAUSED_H1);
     const bool in_et1    = (ms == STATE_EXTRA_TIME_1) ||
                            (ms == STATE_PAUSED_ET && s.clock_seconds < 105u * 60u);
-    const char* right_label = pre_match ? "Abbrechen"
-                            : in_h1     ? "HALBZEIT"
-                            : in_et1    ? "ET HALBZEIT"
-                                        : "MATCH ENDE";
+    const char* right_label = pre_any  ? "Abbrechen"
+                            : in_h1    ? "HALBZEIT"
+                            : in_et1   ? "ET HALBZEIT"
+                                       : "MATCH ENDE";
     g_match_btn_halftime = uih::draw_button(170, 204, 140, 30, right_label,
         COLOR_PRIMARY, COLOR_TEXT, true);
 
@@ -659,7 +662,8 @@ static void handle_match_touch(int16_t x, int16_t y) {
     // During the pre-match countdown there's no match yet — score, score
     // tap-to-edit and tap-clock-to-edit are all locked out so a stray
     // tap can't change a result that hasn't started.
-    const bool is_pre = (s.match_state == STATE_PRE_MATCH);
+    const bool is_pre = (s.match_state == STATE_PRE_MATCH ||
+                         s.match_state == STATE_PRE_EXTRA_TIME);
     if (!is_pre && uih::point_in(g_match_btn_h_inc, x, y)) {
         espnow_client::send_intent_score_delta(true, +1);
             vibe_short();
@@ -699,12 +703,13 @@ static void handle_match_touch(int16_t x, int16_t y) {
         vibe_pause();
     } else if (uih::point_in(g_match_btn_halftime, x, y)) {
         const auto ms = s.match_state;
-        const bool pre_match = (ms == STATE_PRE_MATCH);
+        const bool pre_any   = (ms == STATE_PRE_MATCH ||
+                                ms == STATE_PRE_EXTRA_TIME);
         const bool in_h1     = (ms == STATE_HALF_1 || ms == STATE_PAUSED_H1);
         const bool in_et1    = (ms == STATE_EXTRA_TIME_1) ||
                                (ms == STATE_PAUSED_ET && s.clock_seconds < 105u * 60u);
-        if (pre_match) {
-            // Cancel countdown — abort the not-yet-started match.
+        if (pre_any) {
+            // Cancel countdown — abort the not-yet-started match/ET.
             espnow_client::send_intent_simple(INTENT_RESET);
                 vibe_double();
             go(SCREEN_SETUP);
@@ -1016,6 +1021,18 @@ static void draw_penalty() {
     draw_pk_kick_row(120, s.pk_home_taken, s.pk_home_kicks);
     side_label(154, "GAST", !g_pk_home_turn);
     draw_pk_kick_row(154, s.pk_away_taken, s.pk_away_kicks);
+
+    // Sudden-death indicator. Once either side has taken more than the
+    // regular 5 kicks we're in SD territory. Boxes only show the first
+    // 8 attempts; the BIG score at the top of the screen continues to
+    // tick even on attempts 9–11.
+    if (s.pk_home_taken > 5 || s.pk_away_taken > 5) {
+        char sd[40];
+        snprintf(sd, sizeof(sd), "SUDDEN DEATH  (HEIM %u : GAST %u)",
+                 s.pk_home_taken, s.pk_away_taken);
+        uih::centre_text(DISPLAY_WIDTH / 2, 188, sd, COLOR_WARN,
+                         &fonts::efontJA_14);
+    }
 
     // Three equal-width action buttons.
     const int bw = 96, gap = 6;

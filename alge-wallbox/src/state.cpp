@@ -295,21 +295,20 @@ static void do_start_penalties(bool home_first) {
 }
 
 static void do_pk_kick(bool home_team, bool scored) {
-    if (home_team) {
-        if (g_match.pk_home_taken >= 5) return;
-        if (scored) {
-            g_match.pk_home_kicks |= (1u << g_match.pk_home_taken);
-            g_match.home_score_real++;
-        }
-        g_match.pk_home_taken++;
-    } else {
-        if (g_match.pk_away_taken >= 5) return;
-        if (scored) {
-            g_match.pk_away_kicks |= (1u << g_match.pk_away_taken);
-            g_match.away_score_real++;
-        }
-        g_match.pk_away_taken++;
+    // Standard round is 5 kicks per side. After that, sudden death:
+    // keep ticking up to 11 attempts each (5 + 6 SD, easily covers any
+    // amateur shootout). The bitmask is uint8_t so only the first 8
+    // kicks get per-kick history; kicks 9-11 still count toward the
+    // score, just without an individual box on the UI.
+    uint8_t& taken = home_team ? g_match.pk_home_taken : g_match.pk_away_taken;
+    uint8_t& mask  = home_team ? g_match.pk_home_kicks : g_match.pk_away_kicks;
+    uint8_t& score = home_team ? g_match.home_score_real : g_match.away_score_real;
+    if (taken >= 11) return;
+    if (scored) {
+        if (taken < 8) mask |= (1u << taken);
+        if (score < 99) score++;
     }
+    taken++;
 }
 
 static void do_score_delta(bool home, int delta) {
@@ -376,7 +375,16 @@ bool apply_intent(const IntentPayload& it) {
         }
         break;
     case INTENT_END_MATCH:         do_end_match();                               break;
-    case INTENT_START_EXTRA_TIME:  do_start_extra_time_1();                      break;
+    case INTENT_START_EXTRA_TIME:
+        // Drop into a 1-min count-down instead of leaping straight into
+        // ET1 — football has a short break between regulation and
+        // extra time, and the operator usually needs a moment to brief
+        // the team. tick() promotes PRE_EXTRA_TIME → EXTRA_TIME_1 once
+        // the clock hits zero.
+        g_match.match_state   = STATE_PRE_EXTRA_TIME;
+        g_match.clock_seconds = 60;
+        g_match.clock_running = true;
+        break;
     case INTENT_START_PENALTIES:   do_start_penalties(it.u8_a != 0);             break;
     case INTENT_PK_KICK:           do_pk_kick(it.u8_a != 0, it.u8_b != 0);       break;
 
@@ -501,18 +509,29 @@ void tick(uint32_t dt_ms) {
     frac_ms += dt_ms;
     while (frac_ms >= 1000) {
         frac_ms -= 1000;
-        if (g_match.match_state == STATE_PRE_MATCH) {
+        if (g_match.match_state == STATE_PRE_MATCH ||
+            g_match.match_state == STATE_PRE_EXTRA_TIME) {
             if (g_match.clock_seconds > 0) {
                 g_match.clock_seconds--;
-            } else {
+            } else if (g_match.match_state == STATE_PRE_MATCH) {
                 g_match.match_state    = STATE_HALF_1;
                 g_match.clock_seconds  = 0;
                 g_match.match_start_unix = (uint32_t)time(nullptr);
+            } else {
+                // PRE_EXTRA_TIME → ET1 picks up at 90:00.
+                g_match.match_state    = STATE_EXTRA_TIME_1;
+                g_match.clock_seconds  = 90u * 60u;
             }
             mark_dirty();
         } else {
             g_match.clock_seconds++;
-            if (g_match.clock_seconds >= 5999) g_match.clock_seconds = 5999;
+            // Cap at 9999 s (166:39) — covers all of regulation (90:00)
+            // + full extra time (105:00 → 120:00) + a healthy stoppage
+            // margin without ever wrapping the uint16. The GAZ4 board
+            // physically can't show > 99:59 so its frame builder still
+            // does mm % 100, but the controller/wallbox displays show
+            // the real number so the operator can read e.g. 105:23.
+            if (g_match.clock_seconds >= 9999) g_match.clock_seconds = 9999;
             mark_dirty();
         }
     }

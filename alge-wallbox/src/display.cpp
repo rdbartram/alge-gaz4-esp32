@@ -320,6 +320,7 @@ static const char* match_state_label(MatchState s) {
     case STATE_ET_HALFTIME:      return "ET HALBZEIT";
     case STATE_PENALTY_SHOOTOUT: return "PENALTYS";
     case STATE_PRE_MATCH:        return "ANSTOSS IN…";
+    case STATE_PRE_EXTRA_TIME:   return "VERL. STARTET IN…";
     default:                     return "??";
     }
 }
@@ -345,11 +346,16 @@ static void draw_screen_match_live(const wb_state::Snapshot& s) {
     // Divider
     sprite.drawFastHLine(10, 160, DISPLAY_WIDTH - 20, COLOR_DIM);
 
-    // Clock — Font7 7-segment-ish, accent when running.
+    // Clock — Font7 7-segment-ish, accent when running. Show real
+    // minutes (no % 100) so extra-time clocks read as 105:23 instead
+    // of looping back to 05:23. The GAZ4 board still wraps because of
+    // its hardware (2 digits per side); the LilyGo display is fine to
+    // grow into three digits.
     char clk[8];
-    const uint16_t mm = (s.clock_seconds / 60) % 100;
+    const uint16_t mm = s.clock_seconds / 60;
     const uint16_t ss = s.clock_seconds % 60;
-    snprintf(clk, sizeof(clk), "%02u:%02u", mm, ss);
+    if (mm < 100) snprintf(clk, sizeof(clk), "%02u:%02u", mm, ss);
+    else          snprintf(clk, sizeof(clk), "%u:%02u",   mm, ss);
     sprite.setFont(&fonts::Font7);
     sprite.setTextDatum(middle_center);
     sprite.setTextColor(s.clock_running ? COLOR_ACCENT : COLOR_DIM, COLOR_BG_DARK);

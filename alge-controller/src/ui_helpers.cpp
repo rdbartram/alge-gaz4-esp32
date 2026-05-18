@@ -122,10 +122,14 @@ void draw_score_value(int16_t cx, int16_t cy, uint8_t value, uint16_t color) {
 void draw_clock(int16_t cx, int16_t cy, uint16_t total_seconds,
                 uint16_t color, const lgfx::IFont* font) {
     auto& d = M5.Display;
-    const uint16_t mm = (total_seconds / 60) % 100;
+    // Real (uncapped) minutes — under 100 we pad with a leading zero for
+    // the classic 45:00 look; at 100+ (extra time) we let the digits
+    // run so the operator sees 105:23 rather than 05:23.
+    const uint16_t mm = total_seconds / 60;
     const uint16_t ss = total_seconds % 60;
     char buf[8];
-    snprintf(buf, sizeof(buf), "%02u:%02u", mm, ss);
+    if (mm < 100) snprintf(buf, sizeof(buf), "%02u:%02u", mm, ss);
+    else          snprintf(buf, sizeof(buf), "%u:%02u",   mm, ss);
     d.setFont(font ? font : &fonts::Font7);  // default: big segment style
     d.setTextColor(color, COLOR_BG_DARK);
     d.setTextDatum(middle_center);

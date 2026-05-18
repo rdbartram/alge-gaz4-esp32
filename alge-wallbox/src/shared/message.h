@@ -51,6 +51,7 @@ enum MatchState : uint8_t {
     STATE_PENALTY_SHOOTOUT = 0x0B,
     STATE_PRE_MATCH        = 0x0C,
     STATE_ET_HALFTIME      = 0x0D,
+    STATE_PRE_EXTRA_TIME   = 0x0E,   // 1-min breather between regulation and ET1
 };
 
 // ----- Intent types -------------------------------------------------------
