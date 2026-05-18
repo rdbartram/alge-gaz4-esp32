@@ -1,15 +1,19 @@
 // ============================================================================
-//  Wall-box ESP-NOW receiver.
+//  Wallbox ESP-NOW server — protocol v2 (wallbox-as-master).
 //
 //  Boot flow:
-//    1. If paired_mac in NVS -> register peer, normal operation.
-//    2. Otherwise -> enter pairing mode, broadcast MSG_PAIRING every 1s.
-//    3. When controller responds with its MAC -> save and switch to normal.
+//    1. Load paired peer MAC list from NVS (up to MAX_PAIRED_PEERS).
+//    2. Register each MAC as an ESP-NOW peer.
+//    3. If the list is empty OR the user enters pairing mode (long-press
+//       IO14), start broadcasting MSG_PAIRING invitations every 1 s.
+//    4. When a controller sends MSG_PAIRING_REQ, add it to the table (if
+//       there's room) and reply MSG_PAIRING_ACK.
 //
 //  Steady state:
-//    - Accept MSG_STATE / MSG_CMD only from the paired MAC.
-//    - Respond with MSG_ACK including RSSI.
-//    - Send MSG_HEARTBEAT once per second.
+//    - Accept MSG_INTENT from any peer in the table; apply via state::.
+//    - Broadcast MSG_STATE every 1 s heartbeat + immediately on state change.
+//    - Broadcast MSG_DEFAULTS when the Vorgaben snapshot changes.
+//    - Respond with MSG_INTENT_ACK to each accepted intent.
 // ============================================================================
 #pragma once
 
@@ -21,15 +25,21 @@ namespace espnow_server {
 void begin();
 void loop();
 
-bool is_paired();
-const uint8_t* paired_mac();   // 6-byte array, may be all zeros if unpaired
-void enter_pairing_mode();     // discards any saved peer, broadcasts pairing
+// Pairing.
+void enter_pairing_mode();     // accept new peers for ~30s
+void exit_pairing_mode();      // stop accepting new peers immediately
+bool pairing_mode_active();
+uint8_t paired_peer_count();
+const uint8_t* paired_peer_mac(uint8_t idx);   // nullptr if idx out of range
+void forget_all_peers();       // wipe peer table (factory-reset support)
+
+// State + defaults broadcasting (called by main loop on state change).
+void broadcast_state_now();
+void broadcast_defaults_now();
+void broadcast_state_if_stale();   // every ~1s heartbeat
+
 void factory_reset();          // wipe NVS and reboot
 
-// Send an ACK back to the originator. Called from message handler.
-void send_ack(const uint8_t* peer_mac, uint16_t ack_seq, int8_t rssi);
-
-// Send our current state back to the controller (heartbeat).
-void send_heartbeat();
+int8_t last_rx_rssi();
 
 } // namespace espnow_server

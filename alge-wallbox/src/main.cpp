@@ -105,21 +105,24 @@ void gaz4_tx_scheduler() {
 }
 
 void connection_watchdog() {
+    // In v2 the wallbox is the master, so "connection lost" means no
+    // controller has talked to us in a while — useful as a UI cue, but
+    // not a state we recover from automatically. We just track last
+    // intent timing for the display.
     const uint32_t now = millis();
     if (now - g_last_conn_check_ms < 250) return;
     g_last_conn_check_ms = now;
 
     const auto snap = wb_state::snapshot();
-    if (!espnow_server::is_paired()) return;
+    if (espnow_server::paired_peer_count() == 0) return;
 
-    // If no MSG_STATE for 5s while in MATCH_LIVE, show CONNECTION_LOST.
-    if (snap.wb_mode == wb_state::WB_MATCH_LIVE &&
-        now - snap.last_state_ms > 5000) {
+    // After 30 s of silence from every paired controller, mark the link
+    // as cold. Display can choose to show a banner. A fresh intent flips
+    // it back automatically because apply_intent() touches last_intent_ms.
+    const bool cold = (now - snap.last_intent_ms > 30000);
+    if (snap.wb_mode == wb_state::WB_MATCH_LIVE && cold) {
         wb_state::set_wb_mode(wb_state::WB_CONNECTION_LOST);
-    }
-    // If we were lost but a fresh message arrived (within 2s), recover.
-    if (snap.wb_mode == wb_state::WB_CONNECTION_LOST &&
-        now - snap.last_state_ms < 2000) {
+    } else if (snap.wb_mode == wb_state::WB_CONNECTION_LOST && !cold) {
         wb_state::set_wb_mode(wb_state::WB_MATCH_LIVE);
     }
 }
@@ -204,6 +207,15 @@ void loop() {
         wb_maintenance::start_polarity_test();
         Serial.println("[main] paired - now running polarity test");
     }
+
+    // Wallbox now owns match state — drive the clock here. dt computed
+    // against the loop's own last_tick to keep timing accurate even when
+    // OTA / GAZ4 bursts cost wall time.
+    static uint32_t last_state_tick_ms = millis();
+    const uint32_t  now_ms = millis();
+    wb_state::tick(now_ms - last_state_tick_ms);
+    last_state_tick_ms = now_ms;
+    wb_state::persist_match_if_dirty();   // throttled NVS flush
 
     wb_maintenance::tick();
     // Display BEFORE the GAZ4 scheduler: tx_goal_flash() and the

@@ -154,11 +154,10 @@ static void draw_screen_pairing() {
 static void draw_screen_paired_idle() {
     draw_text_centred(80,  "Bereit fuer", COLOR_TEXT,  2);
     draw_text_centred(110, "Match",       COLOR_TEXT,  2);
-    char mac[24];
-    const uint8_t* m = espnow_server::paired_mac();
-    snprintf(mac, sizeof(mac), "%02X:%02X:%02X:%02X:%02X:%02X",
-             m[0], m[1], m[2], m[3], m[4], m[5]);
-    draw_text_centred(160, mac, COLOR_DIM, 1);
+    char line[32];
+    const uint8_t n = espnow_server::paired_peer_count();
+    snprintf(line, sizeof(line), "%u Pult%s", n, n == 1 ? "" : "e");
+    draw_text_centred(160, line, COLOR_DIM, 1);
     const auto snap = wb_state::snapshot();
     char rssi[24];
     snprintf(rssi, sizeof(rssi), "%d dBm", snap.last_rssi);

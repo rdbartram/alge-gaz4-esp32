@@ -1,10 +1,9 @@
 // ============================================================================
-//  ESP-NOW receiver for the wall-box.
+//  Wallbox ESP-NOW server — protocol v2 implementation.
 // ============================================================================
 #include "espnow_server.h"
 #include "config.h"
 #include "state.h"
-#include "gaz4.h"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -16,37 +15,47 @@
 namespace espnow_server {
 
 static const uint8_t BROADCAST_MAC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+static constexpr uint32_t PAIRING_TIMEOUT_MS = 30000;
+static constexpr uint32_t STATE_HEARTBEAT_MS = 1000;
 
-static uint8_t g_paired_mac[6] = {0};
-static bool    g_have_pair = false;
-static uint16_t g_tx_seq = 0;
-static uint32_t g_last_heartbeat_ms = 0;
-static int8_t  g_last_rx_rssi = -127;
+struct Peer {
+    uint8_t mac[6];
+    bool    in_use;
+    int8_t  last_rssi;
+};
 
-// Forward decls
+static Peer    g_peers[MAX_PAIRED_PEERS];
+static uint8_t g_peer_count = 0;
+
+static bool     g_pairing_mode      = false;
+static uint32_t g_pairing_started_ms = 0;
+static uint32_t g_last_pairing_broadcast_ms = 0;
+static uint32_t g_last_state_broadcast_ms   = 0;
+static uint16_t g_tx_seq            = 0;
+static int8_t   g_last_rx_rssi      = -127;
+
+// --- Forward decls --------------------------------------------------------
 static void on_recv(const esp_now_recv_info_t* info, const uint8_t* data, int len);
-static void handle_state(const ScoreboardMessage& msg, const uint8_t* from);
-static void handle_cmd(const ScoreboardMessage& msg, const uint8_t* from);
-static void handle_pairing(const ScoreboardMessage& msg, const uint8_t* from);
+static void handle_intent (const ScoreboardMessage& m, const uint8_t* from);
+static void handle_pairing(const ScoreboardMessage& m, const uint8_t* from);
 
-static bool load_paired_mac();
-static void save_paired_mac(const uint8_t* mac);
-static void clear_paired_mac();
 static bool register_peer(const uint8_t* mac);
-static void send_pairing_broadcast();
-static void send_pairing_response(const uint8_t* to);
+static void load_peer_table();
+static void save_peer_table();
+static int  find_peer(const uint8_t* mac);
+static bool add_peer(const uint8_t* mac);
+static void send_pairing_invite_broadcast();
+static void send_pairing_ack(const uint8_t* to, PairingReason reason);
+static void send_intent_ack(const uint8_t* to, uint16_t intent_seq, bool ok);
+static void broadcast_to_all_peers(const ScoreboardMessage& msg);
 
-// Forward declared in maintenance.cpp
-extern "C" void wb_maintenance_handle_cmd(const ScoreboardMessage& msg);
-
-// ----------------------------------------------------------------------------
+// ============================================================================
 //  Public API
-// ----------------------------------------------------------------------------
+// ============================================================================
 void begin() {
     WiFi.mode(WIFI_STA);
     WiFi.disconnect();
-    // Lock to channel 1 so the SoftAP added later by ota.cpp doesn't
-    // disturb ESP-NOW peers. Peers use channel 0 = "current STA channel".
+    // Lock channel 1 so OTA's SoftAP later doesn't disturb ESP-NOW peers.
     esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
 
     if (esp_now_init() != ESP_OK) {
@@ -56,99 +65,125 @@ void begin() {
     }
 
     esp_now_register_recv_cb(on_recv);
-    // Broadcast peer for pairing.
+
+    // Broadcast peer for pairing invites.
     esp_now_peer_info_t peer = {};
     memcpy(peer.peer_addr, BROADCAST_MAC, 6);
     peer.channel = 0;
     peer.encrypt = false;
     esp_now_add_peer(&peer);
 
-    g_have_pair = load_paired_mac();
-    if (g_have_pair) {
-        if (register_peer(g_paired_mac)) {
-            wb_state::set_wb_mode(wb_state::WB_PAIRED_IDLE);
-            Serial.printf("[espnow] paired with %02X:%02X:%02X:%02X:%02X:%02X\n",
-                g_paired_mac[0], g_paired_mac[1], g_paired_mac[2],
-                g_paired_mac[3], g_paired_mac[4], g_paired_mac[5]);
-        } else {
-            wb_state::set_wb_mode(wb_state::WB_PAIRING);
-        }
-    } else {
+    load_peer_table();
+    if (g_peer_count == 0) {
+        enter_pairing_mode();
         wb_state::set_wb_mode(wb_state::WB_PAIRING);
+        Serial.println("[espnow] no paired peers; pairing mode active");
+    } else {
+        wb_state::set_paired_peer_count(g_peer_count);
+        wb_state::set_wb_mode(wb_state::WB_PAIRED_IDLE);
+        Serial.printf("[espnow] %u paired peer(s) loaded\n", g_peer_count);
     }
 }
 
 void loop() {
     const uint32_t now = millis();
 
-    // Pairing mode: broadcast invitations once a second.
-    if (wb_state::wb_mode() == wb_state::WB_PAIRING) {
-        if (now - g_last_heartbeat_ms >= ESPNOW_PAIRING_BROADCAST_MS) {
-            g_last_heartbeat_ms = now;
-            send_pairing_broadcast();
-        }
-        return;
+    // Pairing timeout — drop out after 30 s if nobody asked to pair.
+    if (g_pairing_mode && now - g_pairing_started_ms > PAIRING_TIMEOUT_MS) {
+        exit_pairing_mode();
     }
 
-    // Normal: heartbeat 1Hz back to the controller.
-    if (g_have_pair && now - g_last_heartbeat_ms >= ESPNOW_HEARTBEAT_MS) {
-        g_last_heartbeat_ms = now;
-        send_heartbeat();
+    // Pairing broadcasts at 1 Hz while in pairing mode.
+    if (g_pairing_mode && now - g_last_pairing_broadcast_ms >= ESPNOW_PAIRING_BROADCAST_MS) {
+        g_last_pairing_broadcast_ms = now;
+        send_pairing_invite_broadcast();
     }
+
+    // 1 Hz state heartbeat to all paired peers (so they know we're alive
+    // even when nothing else has changed).
+    broadcast_state_if_stale();
 }
-
-bool is_paired() { return g_have_pair; }
-const uint8_t* paired_mac() { return g_paired_mac; }
 
 void enter_pairing_mode() {
-    clear_paired_mac();
-    g_have_pair = false;
-    if (esp_now_is_peer_exist(g_paired_mac)) {
-        esp_now_del_peer(g_paired_mac);
-    }
-    wb_state::set_wb_mode(wb_state::WB_PAIRING);
-    Serial.println("[espnow] entering pairing mode");
+    g_pairing_mode = true;
+    g_pairing_started_ms = millis();
+    wb_state::set_pairing_mode(true);
+    Serial.println("[espnow] entering pairing mode for 30s");
 }
+
+void exit_pairing_mode() {
+    g_pairing_mode = false;
+    wb_state::set_pairing_mode(false);
+    Serial.println("[espnow] leaving pairing mode");
+    if (g_peer_count > 0 && wb_state::wb_mode() == wb_state::WB_PAIRING) {
+        wb_state::set_wb_mode(wb_state::WB_PAIRED_IDLE);
+    }
+}
+
+bool pairing_mode_active() { return g_pairing_mode; }
+uint8_t paired_peer_count() { return g_peer_count; }
+
+const uint8_t* paired_peer_mac(uint8_t idx) {
+    if (idx >= g_peer_count) return nullptr;
+    return g_peers[idx].mac;
+}
+
+void forget_all_peers() {
+    for (uint8_t i = 0; i < MAX_PAIRED_PEERS; ++i) {
+        if (g_peers[i].in_use) {
+            esp_now_del_peer(g_peers[i].mac);
+            g_peers[i].in_use = false;
+        }
+    }
+    g_peer_count = 0;
+    wb_state::set_paired_peer_count(0);
+    save_peer_table();
+}
+
+void broadcast_state_now() {
+    ScoreboardMessage msg = {};
+    msg.msg_type = MSG_STATE;
+    msg.sequence = ++g_tx_seq;
+    msg.rssi     = g_last_rx_rssi;
+    wb_state::fill_state_payload(msg.body.state, g_pairing_mode, /*gaz4_ok=*/true);
+    scoreboard_msg_sign(&msg);
+    broadcast_to_all_peers(msg);
+    g_last_state_broadcast_ms = millis();
+}
+
+void broadcast_defaults_now() {
+    ScoreboardMessage msg = {};
+    msg.msg_type = MSG_DEFAULTS;
+    msg.sequence = ++g_tx_seq;
+    msg.rssi     = g_last_rx_rssi;
+    wb_state::fill_defaults_payload(msg.body.defaults);
+    scoreboard_msg_sign(&msg);
+    broadcast_to_all_peers(msg);
+}
+
+void broadcast_state_if_stale() {
+    if (g_peer_count == 0) return;
+    const uint32_t now = millis();
+    if (now - g_last_state_broadcast_ms >= STATE_HEARTBEAT_MS) {
+        broadcast_state_now();
+    }
+}
+
+int8_t last_rx_rssi() { return g_last_rx_rssi; }
 
 void factory_reset() {
     Preferences prefs;
     prefs.begin(NVS_NAMESPACE, false);
     prefs.clear();
     prefs.end();
-    Serial.println("[espnow] factory reset, restarting...");
+    Serial.println("[espnow] factory reset, restarting…");
     delay(500);
     ESP.restart();
 }
 
-void send_ack(const uint8_t* peer_mac, uint16_t ack_seq, int8_t rssi) {
-    ScoreboardMessage msg = {};
-    msg.msg_type     = MSG_ACK;
-    msg.sequence     = ++g_tx_seq;
-    msg.ack_sequence = ack_seq;
-    msg.rssi         = rssi;
-    scoreboard_msg_sign(&msg);
-    esp_now_send(peer_mac, (uint8_t*)&msg, sizeof(msg));
-}
-
-void send_heartbeat() {
-    if (!g_have_pair) return;
-    const auto snap = wb_state::snapshot();
-    ScoreboardMessage msg = {};
-    msg.msg_type      = MSG_HEARTBEAT;
-    msg.sequence      = ++g_tx_seq;
-    msg.match_state   = snap.match_state;
-    msg.home_score    = snap.home_score;
-    msg.away_score    = snap.away_score;
-    msg.clock_seconds = snap.clock_seconds;
-    msg.flags         = snap.clock_running ? FLAG_CLOCK_RUNNING : 0;
-    msg.rssi          = g_last_rx_rssi;
-    scoreboard_msg_sign(&msg);
-    esp_now_send(g_paired_mac, (uint8_t*)&msg, sizeof(msg));
-}
-
-// ----------------------------------------------------------------------------
-//  Receive callback
-// ----------------------------------------------------------------------------
+// ============================================================================
+//  Internal — recv path
+// ============================================================================
 static void on_recv(const esp_now_recv_info_t* info, const uint8_t* data, int len) {
     if (len < (int)sizeof(ScoreboardMessage)) return;
     ScoreboardMessage msg;
@@ -159,53 +194,109 @@ static void on_recv(const esp_now_recv_info_t* info, const uint8_t* data, int le
     g_last_rx_rssi = info->rx_ctrl ? info->rx_ctrl->rssi : -127;
     wb_state::note_radio_link(true, g_last_rx_rssi);
 
-    // During pairing, accept any peer. Otherwise enforce paired MAC.
-    const bool pairing_mode = (wb_state::wb_mode() == wb_state::WB_PAIRING);
-    if (!pairing_mode) {
-        if (!g_have_pair || memcmp(from, g_paired_mac, 6) != 0) return;
-    }
-
     switch (msg.msg_type) {
-        case MSG_PAIRING: handle_pairing(msg, from); break;
-        case MSG_STATE:   handle_state(msg, from);   break;
-        case MSG_CMD:     handle_cmd(msg, from);     break;
-        default: break;
+    case MSG_PAIRING_REQ:
+        handle_pairing(msg, from);
+        break;
+    case MSG_INTENT:
+        // Only paired peers may send intents (security + accidental
+        // cross-pairing protection).
+        if (find_peer(from) < 0) {
+            Serial.printf("[espnow] intent from unknown peer ignored\n");
+            return;
+        }
+        handle_intent(msg, from);
+        break;
+    default:
+        break;
     }
 }
 
-static void handle_state(const ScoreboardMessage& msg, const uint8_t* from) {
-    wb_state::apply_state_message(msg);
-    send_ack(from, msg.sequence, g_last_rx_rssi);
-}
+static void handle_intent(const ScoreboardMessage& msg, const uint8_t* from) {
+    wb_state::note_intent_received();
+    const bool changed = wb_state::apply_intent(msg.body.intent);
 
-static void handle_cmd(const ScoreboardMessage& msg, const uint8_t* from) {
-    Serial.printf("[espnow] CMD type=%u arg=%u\n", msg.cmd_type, msg.cmd_arg);
-    wb_maintenance_handle_cmd(msg);
-    send_ack(from, msg.sequence, g_last_rx_rssi);
+    // Always ACK so the controller knows the intent landed.
+    send_intent_ack(from, msg.sequence, changed);
+
+    if (changed) {
+        // Push fresh state to everyone right away — no waiting for the
+        // 1Hz heartbeat tick.
+        broadcast_state_now();
+    } else if (msg.body.intent.intent_type == INTENT_REQUEST_FULL) {
+        // Controller wants a fresh snapshot (e.g. it just booted).
+        broadcast_state_now();
+        broadcast_defaults_now();
+    } else if (msg.body.intent.intent_type == INTENT_SET_DEFAULTS) {
+        broadcast_defaults_now();
+        broadcast_state_now();
+    }
 }
 
 static void handle_pairing(const ScoreboardMessage& msg, const uint8_t* from) {
-    if (g_have_pair) {
-        // Already paired but received another pairing request: ignore unless
-        // the user has explicitly entered pairing mode.
-        if (wb_state::wb_mode() != wb_state::WB_PAIRING) return;
+    PairingReason reason = PAIR_OK;
+
+    const int existing = find_peer(from);
+    if (existing >= 0) {
+        // Already known peer asking to pair again — just confirm.
+        reason = PAIR_ALREADY_PAIRED;
+    } else if (!g_pairing_mode) {
+        reason = PAIR_NOT_IN_MODE;
+    } else if (g_peer_count >= MAX_PAIRED_PEERS) {
+        reason = PAIR_TABLE_FULL;
+    } else {
+        if (add_peer(from)) {
+            Serial.printf("[espnow] PAIRED #%u: %02X:%02X:%02X:%02X:%02X:%02X\n",
+                          g_peer_count, from[0], from[1], from[2], from[3], from[4], from[5]);
+            wb_state::set_paired_peer_count(g_peer_count);
+            if (wb_state::wb_mode() == wb_state::WB_PAIRING) {
+                wb_state::set_wb_mode(wb_state::WB_PAIRED_IDLE);
+            }
+            // After accepting one peer, stay in pairing mode for the
+            // remainder of the window so multiple controllers can join.
+        } else {
+            reason = PAIR_TABLE_FULL;
+        }
     }
-    memcpy(g_paired_mac, from, 6);
-    if (register_peer(g_paired_mac)) {
-        save_paired_mac(g_paired_mac);
-        g_have_pair = true;
-        wb_state::set_wb_mode(wb_state::WB_PAIRED_IDLE);
-        Serial.printf("[espnow] PAIRED with %02X:%02X:%02X:%02X:%02X:%02X\n",
-            g_paired_mac[0], g_paired_mac[1], g_paired_mac[2],
-            g_paired_mac[3], g_paired_mac[4], g_paired_mac[5]);
-        // Confirm with a response message so controller can save us too.
-        send_pairing_response(g_paired_mac);
+
+    send_pairing_ack(from, reason);
+
+    // Newly paired peer should get an immediate snapshot so its UI fills in.
+    if (reason == PAIR_OK || reason == PAIR_ALREADY_PAIRED) {
+        broadcast_state_now();
+        broadcast_defaults_now();
     }
 }
 
-// ----------------------------------------------------------------------------
-//  Helpers
-// ----------------------------------------------------------------------------
+// ============================================================================
+//  Peer table helpers
+// ============================================================================
+static int find_peer(const uint8_t* mac) {
+    for (uint8_t i = 0; i < MAX_PAIRED_PEERS; ++i) {
+        if (g_peers[i].in_use && memcmp(g_peers[i].mac, mac, 6) == 0) return (int)i;
+    }
+    return -1;
+}
+
+static bool add_peer(const uint8_t* mac) {
+    if (g_peer_count >= MAX_PAIRED_PEERS) return false;
+    for (uint8_t i = 0; i < MAX_PAIRED_PEERS; ++i) {
+        if (!g_peers[i].in_use) {
+            memcpy(g_peers[i].mac, mac, 6);
+            g_peers[i].in_use = true;
+            g_peers[i].last_rssi = g_last_rx_rssi;
+            if (!register_peer(mac)) {
+                g_peers[i].in_use = false;
+                return false;
+            }
+            g_peer_count++;
+            save_peer_table();
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool register_peer(const uint8_t* mac) {
     if (esp_now_is_peer_exist(mac)) return true;
     esp_now_peer_info_t peer = {};
@@ -215,45 +306,75 @@ static bool register_peer(const uint8_t* mac) {
     return esp_now_add_peer(&peer) == ESP_OK;
 }
 
-static void send_pairing_broadcast() {
+static void load_peer_table() {
+    Preferences prefs;
+    prefs.begin(NVS_NAMESPACE, true);
+    const size_t n = prefs.getBytesLength("peers");
+    if (n == sizeof(g_peers)) {
+        prefs.getBytes("peers", g_peers, sizeof(g_peers));
+    } else {
+        memset(g_peers, 0, sizeof(g_peers));
+    }
+    prefs.end();
+
+    g_peer_count = 0;
+    for (uint8_t i = 0; i < MAX_PAIRED_PEERS; ++i) {
+        if (g_peers[i].in_use) {
+            register_peer(g_peers[i].mac);
+            g_peer_count++;
+        }
+    }
+    wb_state::set_paired_peer_count(g_peer_count);
+}
+
+static void save_peer_table() {
+    Preferences prefs;
+    prefs.begin(NVS_NAMESPACE, false);
+    prefs.putBytes("peers", g_peers, sizeof(g_peers));
+    prefs.end();
+}
+
+// ============================================================================
+//  TX helpers
+// ============================================================================
+static void send_pairing_invite_broadcast() {
     ScoreboardMessage msg = {};
-    msg.msg_type = MSG_PAIRING;
+    msg.msg_type = MSG_PAIRING_REQ;   // wallbox uses same type to advertise availability
     msg.sequence = ++g_tx_seq;
+    msg.body.pairing.reason = PAIR_OK;
+    strncpy(msg.body.pairing.friendly_name, "Wallbox",
+            sizeof(msg.body.pairing.friendly_name) - 1);
     scoreboard_msg_sign(&msg);
     esp_now_send(BROADCAST_MAC, (uint8_t*)&msg, sizeof(msg));
 }
 
-static void send_pairing_response(const uint8_t* to) {
+static void send_pairing_ack(const uint8_t* to, PairingReason reason) {
     ScoreboardMessage msg = {};
-    msg.msg_type = MSG_PAIRING;
+    msg.msg_type = MSG_PAIRING_ACK;
     msg.sequence = ++g_tx_seq;
+    msg.body.pairing.reason = reason;
+    strncpy(msg.body.pairing.friendly_name, "Wallbox",
+            sizeof(msg.body.pairing.friendly_name) - 1);
     scoreboard_msg_sign(&msg);
     esp_now_send(to, (uint8_t*)&msg, sizeof(msg));
 }
 
-static bool load_paired_mac() {
-    Preferences prefs;
-    prefs.begin(NVS_NAMESPACE, true);
-    const size_t n = prefs.getBytes("paired_mac", g_paired_mac, 6);
-    prefs.end();
-    if (n != 6) return false;
-    for (int i = 0; i < 6; ++i) if (g_paired_mac[i] != 0) return true;
-    return false;
+static void send_intent_ack(const uint8_t* to, uint16_t intent_seq, bool ok) {
+    ScoreboardMessage msg = {};
+    msg.msg_type = MSG_INTENT_ACK;
+    msg.sequence = ++g_tx_seq;
+    msg.rssi     = g_last_rx_rssi;
+    msg.body.ack.intent_sequence = intent_seq;
+    msg.body.ack.ok = ok ? 1 : 0;
+    scoreboard_msg_sign(&msg);
+    esp_now_send(to, (uint8_t*)&msg, sizeof(msg));
 }
 
-static void save_paired_mac(const uint8_t* mac) {
-    Preferences prefs;
-    prefs.begin(NVS_NAMESPACE, false);
-    prefs.putBytes("paired_mac", mac, 6);
-    prefs.end();
-}
-
-static void clear_paired_mac() {
-    Preferences prefs;
-    prefs.begin(NVS_NAMESPACE, false);
-    prefs.remove("paired_mac");
-    prefs.end();
-    memset(g_paired_mac, 0, 6);
+static void broadcast_to_all_peers(const ScoreboardMessage& msg) {
+    for (uint8_t i = 0; i < MAX_PAIRED_PEERS; ++i) {
+        if (!g_peers[i].in_use) continue;
+        esp_now_send(g_peers[i].mac, (const uint8_t*)&msg, sizeof(msg));
+    }
 }
 
 } // namespace espnow_server

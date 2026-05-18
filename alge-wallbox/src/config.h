@@ -57,6 +57,12 @@
 // ----- NVS namespace -----------------------------------------------------
 #define NVS_NAMESPACE "fcw_wb"
 
+// ----- Match defaults (used by Vorgaben-backed state machine) ------------
+#define DEFAULT_HALF_LEN_MIN   45
+#define DEFAULT_PAUSE_LEN_MIN  15
+#define EXTRA_TIME_HALF_MIN    15
+#define ENDED_AUTO_BLANK_MS    (5UL * 60UL * 1000UL)  // 5 min
+
 // ----- Version -----------------------------------------------------------
-#define FIRMWARE_VERSION "1.0.0"
+#define FIRMWARE_VERSION "2.0.0"
 #define FIRMWARE_NAME    "alge-wallbox"

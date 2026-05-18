@@ -65,32 +65,11 @@ static void  (*g_numpad_callback)(int) = nullptr;
 static uint8_t g_history_scroll = 0;
 
 // Editable match defaults (NVS-backed)
-struct Defaults {
-    uint8_t half_minutes = DEFAULT_HALF_LEN_MIN;
-    uint8_t pause_minutes = DEFAULT_PAUSE_LEN_MIN;
-    bool    auto_blank_after_match = true;
-    bool    prompt_scorer_on_goal = false;
-};
-static Defaults g_defaults = {};
-
-static void load_defaults() {
-    Preferences p;
-    p.begin(NVS_NAMESPACE, true);
-    g_defaults.half_minutes = p.getUChar("d_half", DEFAULT_HALF_LEN_MIN);
-    g_defaults.pause_minutes = p.getUChar("d_pause", DEFAULT_PAUSE_LEN_MIN);
-    g_defaults.auto_blank_after_match = p.getBool("d_autoblank", true);
-    g_defaults.prompt_scorer_on_goal = p.getBool("d_scorer", false);
-    p.end();
-}
-static void save_defaults() {
-    Preferences p;
-    p.begin(NVS_NAMESPACE, false);
-    p.putUChar("d_half", g_defaults.half_minutes);
-    p.putUChar("d_pause", g_defaults.pause_minutes);
-    p.putBool("d_autoblank", g_defaults.auto_blank_after_match);
-    p.putBool("d_scorer", g_defaults.prompt_scorer_on_goal);
-    p.end();
-}
+// v2: the wallbox owns Vorgaben in NVS. g_defaults_edit is a local
+// scratchpad used only while the Defaults screen is open — populated
+// from state::defaults() on entry and shipped back via
+// INTENT_SET_DEFAULTS when the user hits "Speichern + Zurück".
+static state::Defaults g_defaults_edit = {};
 
 // Long-press tracking for match-screen +/-.
 // When the user holds a delta button, fire repeatedly after 500ms hold, at
@@ -153,7 +132,6 @@ void begin() {
     g_screen = SCREEN_SPLASH;
     g_screen_entered_ms = millis();
     g_invalidate = true;
-    load_defaults();
     M5.Display.fillScreen(COLOR_BG_DARK);
 }
 
@@ -213,8 +191,13 @@ void tick() {
     // Screen-specific clock-driven invalidations.
     if (g_screen == SCREEN_SPLASH) {
         if (now - g_screen_entered_ms > 2000) {
-            // Splash done. If a paused match was persisted, prompt resume.
-            if (state::has_persisted_match() && state::load_if_exists()) {
+            // v2: the wallbox owns match state. If we've heard from the
+            // wallbox and there's an active match, drop the user straight
+            // onto the match screen; otherwise go to setup. If we haven't
+            // heard from the wallbox at all, also go to setup — the
+            // FUNK VERLOREN banner will fire as soon as we render.
+            const auto ms = state::peek().match_state;
+            if (state::link_live() && ms != STATE_IDLE) {
                 go(SCREEN_MATCH);
             } else {
                 go(SCREEN_SETUP);
@@ -251,12 +234,15 @@ void tick() {
     // (now - g_screen_entered_ms) underflows to a huge unsigned int and
     // the auto-blank would fire immediately, kicking the user straight
     // from MATCH ENDE back to SETUP.
-    if (g_screen == SCREEN_ENDED &&
-        g_defaults.auto_blank_after_match &&
-        millis() - g_screen_entered_ms > ENDED_AUTO_BLANK_MS) {
-        espnow_client::send_command(CMD_BLANK, 0);
-        state::reset();
-        go(SCREEN_SETUP);
+    // v2: the wallbox owns the auto-blank timer. Controller just follows
+    // state — if it goes IDLE while we're showing a match-related
+    // screen, drop back to setup so the operator can start the next one.
+    if (state::peek().match_state == STATE_IDLE) {
+        if (g_screen == SCREEN_MATCH || g_screen == SCREEN_HALFTIME ||
+            g_screen == SCREEN_ENDED || g_screen == SCREEN_PENALTY ||
+            g_screen == SCREEN_PENALTY_TOSS) {
+            go(SCREEN_SETUP);
+        }
     }
 }
 
@@ -442,16 +428,15 @@ static void handle_setup_touch(int16_t x, int16_t y) {
     } else if (uih::point_in(g_setup_btn_team, x, y)) {
         open_text_input("Gegner-Name", g_setup_opponent, setup_apply_team);
     } else if (uih::point_in(g_setup_btn_start, x, y)) {
-        state::start_match(g_setup_preset_idx, g_setup_opponent);
-        espnow_client::send_state_now();
+        espnow_client::send_intent_start_match(g_setup_preset_idx, g_setup_opponent);
         vibe_long();
         go(SCREEN_MATCH);
     } else if (uih::point_in(g_setup_btn_countdown, x, y)) {
         // Open numpad to choose countdown length, then enter pre-match.
         open_numpad("Countdown (Min.)", 5, 1, 15, [](int minutes) {
-            state::start_match(g_setup_preset_idx, g_setup_opponent);
-            state::start_pre_match((uint16_t)(minutes * 60));
-            espnow_client::send_state_now();
+            espnow_client::send_intent_pre_match(g_setup_preset_idx,
+                                                 g_setup_opponent,
+                                                 (uint16_t)(minutes * 60));
             ui::go(ui::SCREEN_MATCH);
         });
     }
@@ -620,19 +605,13 @@ static void draw_match_tick() {
 
 // Numpad callbacks for score and clock edits.
 static void numpad_set_home(int v) {
-    state::score_set((uint8_t)v, state::peek().away_score_real);
-    state::save();
-    espnow_client::send_state_now();
+    espnow_client::send_intent_score_set((uint8_t)v, state::peek().away_score_real);
 }
 static void numpad_set_away(int v) {
-    state::score_set(state::peek().home_score_real, (uint8_t)v);
-    state::save();
-    espnow_client::send_state_now();
+    espnow_client::send_intent_score_set(state::peek().home_score_real, (uint8_t)v);
 }
 static void numpad_set_clock(int minutes) {
-    state::get().clock_seconds = (uint16_t)(minutes * 60);
-    state::save();
-    espnow_client::send_state_now();
+    espnow_client::send_intent_clock_set((uint16_t)(minutes * 60));
 }
 
 static void arm_long_press(int16_t x, int16_t y, int16_t w, int16_t h,
@@ -648,39 +627,31 @@ static void arm_long_press(int16_t x, int16_t y, int16_t w, int16_t h,
 static void handle_match_touch(int16_t x, int16_t y) {
     const auto& s = state::peek();
     if (uih::point_in(g_match_btn_h_inc, x, y)) {
-        state::score_home_delta(+1);
-        state::save();
-        espnow_client::send_state_now();
-        vibe_short();
+        espnow_client::send_intent_score_delta(true, +1);
+            vibe_short();
         arm_long_press(g_match_btn_h_inc.x, g_match_btn_h_inc.y,
                        g_match_btn_h_inc.w, g_match_btn_h_inc.h, +1, true);
-        if (g_defaults.prompt_scorer_on_goal) {
+        if (state::defaults().prompt_scorer_on_goal) {
             open_numpad("Torschütze Heim (Trikot-Nr.)", 0, 0, 99,
-                        [](int j) { state::register_goal(true, (uint8_t)j); });
+                        [](int j) { espnow_client::send_intent_register_goal(true, (uint8_t)j); });
         }
     } else if (uih::point_in(g_match_btn_h_dec, x, y)) {
-        state::score_home_delta(-1);
-        state::save();
-        espnow_client::send_state_now();
-        vibe_double();
+        espnow_client::send_intent_score_delta(true, -1);
+            vibe_double();
         arm_long_press(g_match_btn_h_dec.x, g_match_btn_h_dec.y,
                        g_match_btn_h_dec.w, g_match_btn_h_dec.h, -1, true);
     } else if (uih::point_in(g_match_btn_a_inc, x, y)) {
-        state::score_away_delta(+1);
-        state::save();
-        espnow_client::send_state_now();
-        vibe_short();
+        espnow_client::send_intent_score_delta(false, +1);
+            vibe_short();
         arm_long_press(g_match_btn_a_inc.x, g_match_btn_a_inc.y,
                        g_match_btn_a_inc.w, g_match_btn_a_inc.h, +1, false);
-        if (g_defaults.prompt_scorer_on_goal) {
+        if (state::defaults().prompt_scorer_on_goal) {
             open_numpad("Torschütze Gast (Trikot-Nr.)", 0, 0, 99,
-                        [](int j) { state::register_goal(false, (uint8_t)j); });
+                        [](int j) { espnow_client::send_intent_register_goal(false, (uint8_t)j); });
         }
     } else if (uih::point_in(g_match_btn_a_dec, x, y)) {
-        state::score_away_delta(-1);
-        state::save();
-        espnow_client::send_state_now();
-        vibe_double();
+        espnow_client::send_intent_score_delta(false, -1);
+            vibe_double();
         arm_long_press(g_match_btn_a_dec.x, g_match_btn_a_dec.y,
                        g_match_btn_a_dec.w, g_match_btn_a_dec.h, -1, false);
     } else if (uih::point_in(g_match_score_home, x, y)) {
@@ -690,8 +661,7 @@ static void handle_match_touch(int16_t x, int16_t y) {
     } else if (uih::point_in(g_match_btn_clock, x, y)) {
         open_numpad("Uhr (Min.)", s.clock_seconds / 60, 0, 120, numpad_set_clock);
     } else if (uih::point_in(g_match_btn_pause, x, y)) {
-        if (s.clock_running) state::pause(); else state::resume();
-        espnow_client::send_state_now();
+        if (s.clock_running) espnow_client::send_intent_simple(INTENT_PAUSE); else espnow_client::send_intent_simple(INTENT_RESUME);
         vibe_pause();
     } else if (uih::point_in(g_match_btn_halftime, x, y)) {
         const auto ms = s.match_state;
@@ -701,35 +671,30 @@ static void handle_match_touch(int16_t x, int16_t y) {
                                (ms == STATE_PAUSED_ET && s.clock_seconds < 105u * 60u);
         if (pre_match) {
             // Cancel countdown — abort the not-yet-started match.
-            state::reset();
-            state::clear_persisted();
-            espnow_client::send_state_now();
-            vibe_double();
+            espnow_client::send_intent_simple(INTENT_RESET);
+                vibe_double();
             go(SCREEN_SETUP);
         } else if (in_h1 || in_et1) {
             // start_halftime() inspects the current match_state and
             // routes to STATE_HALFTIME or STATE_ET_HALFTIME for us.
-            state::start_halftime();
-            espnow_client::send_state_now();
-            vibe_long();
+            espnow_client::send_intent_simple(INTENT_START_HALFTIME);
+                vibe_long();
             go(SCREEN_HALFTIME);
         } else {
             // H2 or ET2 → end of the match
-            state::end_match();
-            espnow_client::send_state_now();
-            vibe_long();
+            espnow_client::send_intent_simple(INTENT_END_MATCH);
+                vibe_long();
             go(SCREEN_ENDED);
         }
     } else if (uih::point_in(g_match_btn_settings, x, y)) {
         g_screen_return = SCREEN_MATCH;
         go(SCREEN_SETTINGS);
     } else if (state::can_undo() && uih::point_in(g_match_btn_undo, x, y)) {
-        state::undo();
-        espnow_client::send_state_now();
+        espnow_client::send_intent_simple(INTENT_UNDO);
         vibe_double();
     } else if (uih::point_in(g_match_btn_stoppage, x, y)) {
         open_numpad("Nachspielzeit (Min.)", s.stoppage_minutes, 0, 15,
-                    [](int v) { state::set_stoppage_minutes((uint8_t)v); });
+                    [](int v) { espnow_client::send_intent_stoppage((uint8_t)v); });
     }
 }
 
@@ -765,7 +730,7 @@ static void draw_halftime() {
     // Pause countdown — measured from when this screen was entered.
     // Uses the operator-configured Halbzeitpause from Vorgaben.
     const uint32_t elapsed_ms = millis() - g_screen_entered_ms;
-    const int32_t remain = (int32_t)(g_defaults.pause_minutes * 60) - (int32_t)(elapsed_ms / 1000);
+    const int32_t remain = (int32_t)(state::defaults().pause_minutes * 60) - (int32_t)(elapsed_ms / 1000);
     const uint16_t cmin = remain > 0 ? remain / 60 : 0;
     const uint16_t csec = remain > 0 ? remain % 60 : 0;
     // Pause label near its old position; big countdown number drops
@@ -782,7 +747,7 @@ static void draw_halftime() {
 
     char resume_label[20];
     snprintf(resume_label, sizeof(resume_label),
-             "2.HZ ab %u:00", g_defaults.half_minutes);
+             "2.HZ ab %u:00", state::defaults().half_minutes);
     g_ht_btn_resume_at_45 = uih::draw_button(10, 204, 150, 30,
         from_et ? "ET2 ab 105:00" : resume_label, COLOR_DIM, COLOR_TEXT);
     g_ht_btn_start_h2 = uih::draw_button(170, 204, 140, 30,
@@ -795,7 +760,7 @@ static void draw_halftime() {
 static void draw_halftime_tick() {
     auto& d = M5.Display;
     const uint32_t elapsed_ms = millis() - g_screen_entered_ms;
-    const int32_t remain = (int32_t)(g_defaults.pause_minutes * 60) - (int32_t)(elapsed_ms / 1000);
+    const int32_t remain = (int32_t)(state::defaults().pause_minutes * 60) - (int32_t)(elapsed_ms / 1000);
     const uint16_t cmin = remain > 0 ? remain / 60 : 0;
     const uint16_t csec = remain > 0 ? remain % 60 : 0;
     char buf[8];
@@ -812,15 +777,13 @@ static void draw_halftime_tick() {
 static void handle_halftime_touch(int16_t x, int16_t y) {
     const bool from_et = (state::peek().match_state == STATE_ET_HALFTIME);
     if (uih::point_in(g_ht_btn_resume_at_45, x, y)) {
-        if (from_et) state::start_extra_time_2();
-        else         state::start_half_2(true, (uint16_t)g_defaults.half_minutes * 60);
-        espnow_client::send_state_now();
+        if (from_et) espnow_client::send_intent_start_half_2(true, 105u * 60u);
+        else         espnow_client::send_intent_start_half_2(true, (uint16_t)state::defaults().half_minutes * 60);
         vibe_long();
         go(SCREEN_MATCH);
     } else if (uih::point_in(g_ht_btn_start_h2, x, y)) {
-        if (from_et) state::start_extra_time_2();
-        else         state::start_half_2(false, 0);   // resume from half1_end_seconds
-        espnow_client::send_state_now();
+        if (from_et) espnow_client::send_intent_start_half_2(true, 105u * 60u);
+        else         espnow_client::send_intent_start_half_2(false, 0);   // resume from half1_end_seconds
         vibe_long();
         go(SCREEN_MATCH);
     }
@@ -870,15 +833,14 @@ static void handle_ended_touch(int16_t x, int16_t y) {
                   g_end_btn_extra.x, g_end_btn_extra.y, g_end_btn_extra.w, g_end_btn_extra.h,
                   g_end_btn_penalty.x, g_end_btn_penalty.y, g_end_btn_penalty.w, g_end_btn_penalty.h);
     if (uih::point_in(g_end_btn_new, x, y)) {
-        state::reset();
-        espnow_client::send_command(CMD_BLANK, 0);
+        espnow_client::send_intent_simple(INTENT_RESET);
+        espnow_client::send_intent_simple(INTENT_BLANK);
         go(SCREEN_SETUP);
     } else if (uih::point_in(g_end_btn_blank, x, y)) {
-        espnow_client::send_command(CMD_BLANK, 0);
+        espnow_client::send_intent_simple(INTENT_BLANK);
     } else if (uih::point_in(g_end_btn_extra, x, y) &&
                s.home_score_real == s.away_score_real) {
-        state::start_extra_time_1();
-        espnow_client::send_state_now();
+        espnow_client::send_intent_simple(INTENT_START_EXTRA_TIME);
         go(SCREEN_MATCH);
     } else if (uih::point_in(g_end_btn_penalty, x, y) &&
                s.home_score_real == s.away_score_real) {
@@ -923,9 +885,8 @@ static void handle_penalty_toss_touch(int16_t x, int16_t y) {
     else if (uih::point_in(g_pkt_btn_back, x, y)) { go(SCREEN_ENDED); return; }
 
     if (start) {
-        state::start_penalty_shootout();
+        espnow_client::send_intent_start_penalties(g_pk_home_turn);
         g_pk_home_turn = home_first;
-        espnow_client::send_state_now();
         vibe_long();
         go(SCREEN_PENALTY);
     }
@@ -1022,32 +983,27 @@ static void draw_penalty() {
 static void handle_penalty_touch(int16_t x, int16_t y) {
     if (g_pk_home_turn) {
         if (uih::point_in(g_pk_btn_home_score, x, y)) {
-            state::register_pk_kick(true, true);
-            espnow_client::send_state_now();
-            g_pk_home_turn = false;
+            espnow_client::send_intent_pk_kick(true, true);
+                g_pk_home_turn = false;
             vibe_short();
         } else if (uih::point_in(g_pk_btn_home_miss, x, y)) {
-            state::register_pk_kick(true, false);
-            espnow_client::send_state_now();
-            g_pk_home_turn = false;
+            espnow_client::send_intent_pk_kick(true, false);
+                g_pk_home_turn = false;
             vibe_double();
         }
     } else {
         if (uih::point_in(g_pk_btn_away_score, x, y)) {
-            state::register_pk_kick(false, true);
-            espnow_client::send_state_now();
-            g_pk_home_turn = true;
+            espnow_client::send_intent_pk_kick(false, true);
+                g_pk_home_turn = true;
             vibe_short();
         } else if (uih::point_in(g_pk_btn_away_miss, x, y)) {
-            state::register_pk_kick(false, false);
-            espnow_client::send_state_now();
-            g_pk_home_turn = true;
+            espnow_client::send_intent_pk_kick(false, false);
+                g_pk_home_turn = true;
             vibe_double();
         }
     }
     if (uih::point_in(g_pk_btn_end, x, y)) {
-        state::end_match();
-        espnow_client::send_state_now();
+        espnow_client::send_intent_simple(INTENT_END_MATCH);
         go(SCREEN_ENDED);
     }
 }
@@ -1181,13 +1137,13 @@ static void handle_settings_touch(int16_t x, int16_t y) {
         espnow_client::enter_pairing_mode();
         show_toast("Kopplung läuft…");
     } else if (uih::point_in(g_set_btn_polarity, x, y)) {
-        espnow_client::send_command(CMD_POLARITY_TEST, 0);
+        espnow_client::send_intent_simple(INTENT_POLARITY_TEST);
         show_toast("Polaritäts-Test gesendet");
     } else if (uih::point_in(g_set_btn_exercise, x, y)) {
-        espnow_client::send_command(CMD_SEGMENT_EXERCISE, 11);
+        espnow_client::send_intent_simple(INTENT_SEGMENT_EXERCISE);
         show_toast("Segment-Übung gestartet");
     } else if (uih::point_in(g_set_btn_blank, x, y)) {
-        espnow_client::send_command(CMD_BLANK, 0);
+        espnow_client::send_intent_simple(INTENT_BLANK);
         show_toast("Tafel gelöscht");
     } else if (uih::point_in(g_set_btn_factory, x, y)) {
         // Destructive: wipes pairing + history + match state and reboots.
@@ -1195,8 +1151,8 @@ static void handle_settings_touch(int16_t x, int16_t y) {
         // everything.
         open_confirm("Werkseinstellung, alle Daten gehen verloren?",
                      []() {
-                         espnow_client::send_command(CMD_FACTORY_RESET, 0);
-                         state::reset();
+                         espnow_client::send_intent_simple(INTENT_FACTORY_RESET);
+                         espnow_client::send_intent_simple(INTENT_RESET);
                          delay(500);
                          ESP.restart();
                      });
@@ -1206,6 +1162,10 @@ static void handle_settings_touch(int16_t x, int16_t y) {
         g_history_scroll = 0;
         go(SCREEN_HISTORY);
     } else if (uih::point_in(g_set_btn_defaults, x, y)) {
+        // Snapshot the wallbox's current Vorgaben into our local edit
+        // copy before showing the screen, so dec/inc start from the
+        // real values rather than zero.
+        g_defaults_edit = state::defaults();
         go(SCREEN_DEFAULTS);
     }
 }
@@ -1474,36 +1434,21 @@ static void draw_history() {
     const uint8_t n = state::history_count();
     if (n == 0) {
         uih::centre_text(DISPLAY_WIDTH / 2, 100, "Keine Matches gespeichert.",
-                         COLOR_DIM, &fonts::FreeSans12pt7b);
+                         COLOR_DIM, &fonts::efontJA_14);
     } else {
-        // efontJA_14 — opponent name may contain umlauts.
-        d.setTextColor(COLOR_TEXT, COLOR_BG_DARK);
-        d.setFont(&fonts::efontJA_14);
-        d.setTextDatum(top_left);
-        const int per_page = 5;
-        const int row_h = 32;
-        for (int i = 0; i < per_page; ++i) {
-            const int idx = g_history_scroll + i;
-            if (idx >= n) break;
-            const auto& h = state::history(idx);
-            const int y = HEADER_HEIGHT + 6 + i * row_h;
-            d.fillRoundRect(8, y, DISPLAY_WIDTH - 60, row_h - 4, 4, 0x10A2);
-            d.drawRoundRect(8, y, DISPLAY_WIDTH - 60, row_h - 4, 4, COLOR_DIM);
-            const auto& p = matchmodes::get(h.preset_idx);
-            const uint16_t mm = (h.final_clock_seconds / 60) % 100;
-            const uint16_t ss = h.final_clock_seconds % 60;
-            char line1[40], line2[40];
-            snprintf(line1, sizeof(line1), "%u-%u vs %s",
-                     h.home_score_real, h.away_score_real, h.opponent);
-            snprintf(line2, sizeof(line2), "%s . %02u:%02u",
-                     p.label, mm, ss);
-            d.setTextColor(COLOR_TEXT);
-            d.drawString(line1, 14, y + 4);
-            d.setTextColor(COLOR_DIM);
-            d.drawString(line2, 14, y + 16);
-        }
-        g_hist_btn_up   = uih::draw_button(DISPLAY_WIDTH - 44, 36,  36, 32, "^", COLOR_DIM, COLOR_TEXT);
-        g_hist_btn_down = uih::draw_button(DISPLAY_WIDTH - 44, 72,  36, 32, "v", COLOR_DIM, COLOR_TEXT);
+        // v2: full history detail (per-goal lookup, opponent names) lives
+        // only on the wallbox right now — broadcasting every entry on
+        // every MSG_STATE would balloon the packet. Show the count and a
+        // hint until we add a dedicated MSG_HISTORY for on-demand
+        // retrieval.
+        char top[40];
+        snprintf(top, sizeof(top), "%u Match%s gespeichert", n, n == 1 ? "" : "es");
+        uih::centre_text(DISPLAY_WIDTH / 2, 90, top, COLOR_TEXT, &fonts::efontJA_16);
+        uih::centre_text(DISPLAY_WIDTH / 2, 130,
+                         "Details bald über die Tafel abrufbar.",
+                         COLOR_DIM, &fonts::efontJA_14);
+        g_hist_btn_up   = { 0, 0, 0, 0 };
+        g_hist_btn_down = { 0, 0, 0, 0 };
     }
     g_hist_btn_clear = uih::draw_button(10,  210, 140, 26, "Verlauf löschen",
                                         COLOR_BG_DARK, COLOR_WARN);
@@ -1523,11 +1468,7 @@ static void handle_history_touch(int16_t x, int16_t y) {
     if (uih::point_in(g_hist_btn_clear, x, y)) {
         open_confirm("Match-Verlauf löschen, kein Zurück?",
                      []() {
-                         Preferences p;
-                         p.begin(NVS_NAMESPACE, false);
-                         p.putUChar("hist_n", 0);
-                         p.end();
-                         state::begin();   // reload in-memory mirror
+                         espnow_client::send_intent_simple(INTENT_HISTORY_CLEAR);
                          g_history_scroll = 0;
                      });
         return;
@@ -1570,8 +1511,8 @@ static void draw_defaults() {
     };
 
     char b1[8], b2[8];
-    snprintf(b1, sizeof(b1), "%u min", g_defaults.half_minutes);
-    snprintf(b2, sizeof(b2), "%u min", g_defaults.pause_minutes);
+    snprintf(b1, sizeof(b1), "%u min", g_defaults_edit.half_minutes);
+    snprintf(b2, sizeof(b2), "%u min", g_defaults_edit.pause_minutes);
     value_row( 60, "Halbzeit-Länge:", b1, g_def_half_dec,  g_def_half_inc);
     value_row( 98, "Halbzeitpause:",   b2, g_def_pause_dec, g_def_pause_inc);
 
@@ -1586,15 +1527,15 @@ static void draw_defaults() {
     d.setTextDatum(middle_left);
     d.drawString("Auto-löschen:", 10, 140);
     g_def_autoblank_toggle = uih::draw_button(158, 127, 150, 24,
-        g_defaults.auto_blank_after_match ? "AN" : "AUS",
-        g_defaults.auto_blank_after_match ? COLOR_SUCCESS : COLOR_DIM,
+        g_defaults_edit.auto_blank_after_match ? "AN" : "AUS",
+        g_defaults_edit.auto_blank_after_match ? COLOR_SUCCESS : COLOR_DIM,
         COLOR_BG_DARK);
 
     d.setTextDatum(middle_left);
     d.drawString("Torschütze:", 10, 178);
     g_def_scorer_toggle = uih::draw_button(158, 165, 150, 24,
-        g_defaults.prompt_scorer_on_goal ? "AN" : "AUS",
-        g_defaults.prompt_scorer_on_goal ? COLOR_SUCCESS : COLOR_DIM,
+        g_defaults_edit.prompt_scorer_on_goal ? "AN" : "AUS",
+        g_defaults_edit.prompt_scorer_on_goal ? COLOR_SUCCESS : COLOR_DIM,
         COLOR_BG_DARK);
 
     g_def_back = uih::draw_button(10, 208, DISPLAY_WIDTH - 20, 28,
@@ -1604,24 +1545,31 @@ static void draw_defaults() {
 static void handle_defaults_touch(int16_t x, int16_t y) {
     bool changed = false;
     if (uih::point_in(g_def_half_dec, x, y)) {
-        if (g_defaults.half_minutes > 5) { g_defaults.half_minutes--; changed = true; }
+        if (g_defaults_edit.half_minutes > 5) { g_defaults_edit.half_minutes--; changed = true; }
     } else if (uih::point_in(g_def_half_inc, x, y)) {
-        if (g_defaults.half_minutes < 60) { g_defaults.half_minutes++; changed = true; }
+        if (g_defaults_edit.half_minutes < 60) { g_defaults_edit.half_minutes++; changed = true; }
     } else if (uih::point_in(g_def_pause_dec, x, y)) {
-        if (g_defaults.pause_minutes > 1) { g_defaults.pause_minutes--; changed = true; }
+        if (g_defaults_edit.pause_minutes > 1) { g_defaults_edit.pause_minutes--; changed = true; }
     } else if (uih::point_in(g_def_pause_inc, x, y)) {
-        if (g_defaults.pause_minutes < 30) { g_defaults.pause_minutes++; changed = true; }
+        if (g_defaults_edit.pause_minutes < 30) { g_defaults_edit.pause_minutes++; changed = true; }
     } else if (uih::point_in(g_def_autoblank_toggle, x, y)) {
-        g_defaults.auto_blank_after_match = !g_defaults.auto_blank_after_match;
+        g_defaults_edit.auto_blank_after_match = !g_defaults_edit.auto_blank_after_match;
         changed = true;
     } else if (uih::point_in(g_def_scorer_toggle, x, y)) {
-        g_defaults.prompt_scorer_on_goal = !g_defaults.prompt_scorer_on_goal;
+        g_defaults_edit.prompt_scorer_on_goal = !g_defaults_edit.prompt_scorer_on_goal;
         changed = true;
     } else if (uih::point_in(g_def_back, x, y)) {
-        save_defaults();
+        // Ship the edited defaults back to the wallbox and bounce out.
+        espnow_client::send_intent_set_defaults(
+            g_defaults_edit.half_minutes,
+            g_defaults_edit.pause_minutes,
+            g_defaults_edit.auto_blank_after_match,
+            g_defaults_edit.prompt_scorer_on_goal);
         go(SCREEN_SETTINGS);
     }
-    if (changed) save_defaults();
+    // No save-while-editing: the wallbox-side write only happens on
+    // "Speichern + Zurück" so an interrupted session can't half-commit.
+    (void)changed;
 }
 
 // ============================================================================
@@ -1643,11 +1591,8 @@ static void check_long_press() {
     if (hold < 500) return;
     if (g_lp.last_fire_ms == 0 || now - g_lp.last_fire_ms >= 200) {
         g_lp.last_fire_ms = now;
-        if (g_lp.home_side) state::score_home_delta(g_lp.delta);
-        else                state::score_away_delta(g_lp.delta);
-        state::save();
-        espnow_client::send_state_now();
-        vibe_short();
+        espnow_client::send_intent_score_delta(g_lp.home_side, (int8_t)g_lp.delta);
+            vibe_short();
         invalidate();
     }
 }

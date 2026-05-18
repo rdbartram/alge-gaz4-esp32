@@ -52,12 +52,7 @@ void setup() {
 }
 
 void loop() {
-    static uint32_t last_tick_ms = 0;
-    const uint32_t now = millis();
-    const uint32_t dt  = now - last_tick_ms;
-    last_tick_ms = now;
-
-    state::tick(dt);
+    // v2: state lives on the wallbox, no local clock to advance.
     espnow_client::loop();
 #ifndef WOKWI_SIM
     web::loop();
