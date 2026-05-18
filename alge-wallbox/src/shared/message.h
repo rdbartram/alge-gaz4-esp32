@@ -85,6 +85,7 @@ enum IntentType : uint8_t {
     INTENT_REQUEST_FULL      = 0x19,  // controller asks for fresh MSG_STATE + MSG_DEFAULTS
     INTENT_CANCEL_PRE_MATCH  = 0x1A,  // abort countdown back to IDLE
     INTENT_REQUEST_HISTORY   = 0x1B,  // wallbox replies with N MSG_HISTORY packets
+    INTENT_SKIP_COUNTDOWN    = 0x1C,  // PRE_MATCH→HALF_1 / PRE_EXTRA_TIME→ET_1
 };
 
 // ----- Pairing rejection reasons -----------------------------------------
@@ -112,6 +113,8 @@ struct DefaultsPayload {
     uint8_t  pause_minutes;
     uint8_t  auto_blank_after_match;
     uint8_t  prompt_scorer_on_goal;
+    uint8_t  auto_start_after_break;   // 1 = countdowns/halftimes auto-promote
+    uint8_t  reserved[3];               // pad for future use, keeps layout stable
 };
 
 // ---- Full state snapshot — what controllers render any screen from.
@@ -135,7 +138,7 @@ struct StatePayload {
     uint8_t  flags;                   // FLAG_*
     uint8_t  history_count;           // for the Match-Verlauf badge
     uint8_t  pk_home_first;           // 1 if HEIM took first kick
-    uint8_t  reserved;
+    uint8_t  extra_time_played;       // 1 once ET phases have occurred
     char     opponent[24];
 };
 

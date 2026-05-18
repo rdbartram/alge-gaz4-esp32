@@ -31,6 +31,12 @@ struct UndoFrame {
     bool       clock_running;
     uint8_t    stoppage_minutes;
     uint8_t    goal_count;
+    uint8_t    pk_home_kicks;
+    uint8_t    pk_away_kicks;
+    uint8_t    pk_home_taken;
+    uint8_t    pk_away_taken;
+    uint8_t    pk_home_made;
+    uint8_t    pk_away_made;
 };
 static UndoFrame g_undo[UNDO_DEPTH];
 static uint8_t   g_undo_count = 0;
@@ -81,6 +87,12 @@ static void push_undo() {
     f.clock_running    = g_match.clock_running;
     f.stoppage_minutes = g_match.stoppage_minutes;
     f.goal_count       = g_match.goal_count;
+    f.pk_home_kicks    = g_match.pk_home_kicks;
+    f.pk_away_kicks    = g_match.pk_away_kicks;
+    f.pk_home_taken    = g_match.pk_home_taken;
+    f.pk_away_taken    = g_match.pk_away_taken;
+    f.pk_home_made     = g_match.pk_home_made;
+    f.pk_away_made     = g_match.pk_away_made;
     for (int i = UNDO_DEPTH - 1; i > 0; --i) g_undo[i] = g_undo[i - 1];
     g_undo[0] = f;
     if (g_undo_count < UNDO_DEPTH) g_undo_count++;
@@ -96,6 +108,12 @@ static void undo_pop() {
     g_match.clock_running    = f.clock_running;
     g_match.stoppage_minutes = f.stoppage_minutes;
     g_match.goal_count       = f.goal_count;
+    g_match.pk_home_kicks    = f.pk_home_kicks;
+    g_match.pk_away_kicks    = f.pk_away_kicks;
+    g_match.pk_home_taken    = f.pk_home_taken;
+    g_match.pk_away_taken    = f.pk_away_taken;
+    g_match.pk_home_made     = f.pk_home_made;
+    g_match.pk_away_made     = f.pk_away_made;
     for (int i = 0; i < UNDO_DEPTH - 1; ++i) g_undo[i] = g_undo[i + 1];
     g_undo_count--;
 }
@@ -154,6 +172,7 @@ void load_defaults() {
     g_defaults.pause_minutes = p.getUChar("d_pause",     DEFAULT_PAUSE_LEN_MIN);
     g_defaults.auto_blank_after_match = p.getBool("d_autoblank", true);
     g_defaults.prompt_scorer_on_goal  = p.getBool("d_scorer",    false);
+    g_defaults.auto_start_after_break = p.getBool("d_autoseg",   false);
     p.end();
 }
 
@@ -164,6 +183,7 @@ void save_defaults() {
     p.putUChar("d_pause",     g_defaults.pause_minutes);
     p.putBool ("d_autoblank", g_defaults.auto_blank_after_match);
     p.putBool ("d_scorer",    g_defaults.prompt_scorer_on_goal);
+    p.putBool ("d_autoseg",   g_defaults.auto_start_after_break);
     p.end();
 }
 
@@ -237,6 +257,23 @@ static void do_resume() {
         break;
     case STATE_HALFTIME:    g_match.match_state = STATE_HALF_2;        break;
     case STATE_ET_HALFTIME: g_match.match_state = STATE_EXTRA_TIME_2;  break;
+    case STATE_PRE_MATCH:
+        // Manual GO at the end of the kickoff countdown — promote into
+        // HALF_1 at 00:00. (If the countdown still had time on it the
+        // resume just restarts the count-down — handled by the
+        // generic clock_running=true below.)
+        if (g_match.clock_seconds == 0) {
+            g_match.match_state    = STATE_HALF_1;
+            g_match.match_start_unix = (uint32_t)time(nullptr);
+        }
+        break;
+    case STATE_PRE_EXTRA_TIME:
+        if (g_match.clock_seconds == 0) {
+            g_match.match_state   = STATE_EXTRA_TIME_1;
+            g_match.clock_seconds = 90u * 60u;
+            g_match.extra_time_played = true;
+        }
+        break;
     default: break;
     }
     g_match.clock_running = true;
@@ -276,6 +313,7 @@ static void do_start_extra_time_1() {
     g_match.match_state = STATE_EXTRA_TIME_1;
     g_match.clock_seconds = 90u * 60u;
     g_match.clock_running = true;
+    g_match.extra_time_played = true;
 }
 
 static void do_start_extra_time_2() {
@@ -291,7 +329,32 @@ static void do_start_penalties(bool home_first) {
     g_match.pk_away_kicks = 0;
     g_match.pk_home_taken = 0;
     g_match.pk_away_taken = 0;
+    g_match.pk_home_made  = 0;
+    g_match.pk_away_made  = 0;
     g_match.pk_home_first = home_first;
+}
+
+// True iff the shootout is mathematically decided. Distinguishes the
+// two regimes:
+//   - Standard round: a side wins as soon as its made count exceeds
+//     the maximum the opponent can still reach with their remaining
+//     kicks (e.g. 3-0 after 3+3 means away can't catch up).
+//   - Sudden death: starts once both have taken five. Decided after
+//     a matched pair of kicks where one side made and the other didn't.
+static bool pk_shootout_decided() {
+    const uint8_t ht = g_match.pk_home_taken;
+    const uint8_t at = g_match.pk_away_taken;
+    const uint8_t hm = g_match.pk_home_made;
+    const uint8_t am = g_match.pk_away_made;
+    const bool sd = (ht >= 5 && at >= 5);
+    if (sd) {
+        return (ht == at) && (hm != am);
+    }
+    const uint8_t kicks_left_h = (ht >= 5) ? 0 : (5 - ht);
+    const uint8_t kicks_left_a = (at >= 5) ? 0 : (5 - at);
+    const uint8_t max_h = hm + kicks_left_h;
+    const uint8_t max_a = am + kicks_left_a;
+    return (hm > max_a) || (am > max_h);
 }
 
 static void do_pk_kick(bool home_team, bool scored) {
@@ -303,12 +366,24 @@ static void do_pk_kick(bool home_team, bool scored) {
     uint8_t& taken = home_team ? g_match.pk_home_taken : g_match.pk_away_taken;
     uint8_t& mask  = home_team ? g_match.pk_home_kicks : g_match.pk_away_kicks;
     uint8_t& score = home_team ? g_match.home_score_real : g_match.away_score_real;
+    uint8_t& made  = home_team ? g_match.pk_home_made   : g_match.pk_away_made;
     if (taken >= 11) return;
+    // Snapshot for undo so the "Zurück" button on the penalty screen
+    // can roll a mistapped Tor/Daneben back. (Without this, undo would
+    // skip over PK kicks entirely.)
+    push_undo();
     if (scored) {
         if (taken < 8) mask |= (1u << taken);
         if (score < 99) score++;
+        if (made < 99) made++;
     }
     taken++;
+
+    // Auto-end the match the moment the shootout is decided — saves
+    // the operator from having to spot the winning kick and tap ENDE.
+    if (pk_shootout_decided()) {
+        do_end_match();
+    }
 }
 
 static void do_score_delta(bool home, int delta) {
@@ -380,10 +455,31 @@ bool apply_intent(const IntentPayload& it) {
         // ET1 — football has a short break between regulation and
         // extra time, and the operator usually needs a moment to brief
         // the team. tick() promotes PRE_EXTRA_TIME → EXTRA_TIME_1 once
-        // the clock hits zero.
+        // the clock hits zero. Mark the flag now (not on promotion) so
+        // an operator who aborts the countdown still doesn't get the
+        // "Verlängerung" button offered a second time.
         g_match.match_state   = STATE_PRE_EXTRA_TIME;
         g_match.clock_seconds = 60;
         g_match.clock_running = true;
+        g_match.extra_time_played = true;
+        break;
+    case INTENT_SKIP_COUNTDOWN:
+        // Operator's "skip to next phase" button on the pre-match / pre-ET
+        // countdown. Saves waiting out the configured count-down when the
+        // teams are already on the pitch.
+        if (g_match.match_state == STATE_PRE_MATCH) {
+            g_match.match_state      = STATE_HALF_1;
+            g_match.clock_seconds    = 0;
+            g_match.clock_running    = true;
+            g_match.match_start_unix = (uint32_t)time(nullptr);
+        } else if (g_match.match_state == STATE_PRE_EXTRA_TIME) {
+            g_match.match_state       = STATE_EXTRA_TIME_1;
+            g_match.clock_seconds     = 90u * 60u;
+            g_match.clock_running     = true;
+            g_match.extra_time_played = true;
+        } else {
+            changed = false;
+        }
         break;
     case INTENT_START_PENALTIES:   do_start_penalties(it.u8_a != 0);             break;
     case INTENT_PK_KICK:           do_pk_kick(it.u8_a != 0, it.u8_b != 0);       break;
@@ -435,6 +531,7 @@ bool apply_intent(const IntentPayload& it) {
         g_defaults.pause_minutes           = it.defaults.pause_minutes;
         g_defaults.auto_blank_after_match  = it.defaults.auto_blank_after_match != 0;
         g_defaults.prompt_scorer_on_goal   = it.defaults.prompt_scorer_on_goal  != 0;
+        g_defaults.auto_start_after_break  = it.defaults.auto_start_after_break != 0;
         save_defaults();
         break;
 
@@ -513,16 +610,27 @@ void tick(uint32_t dt_ms) {
             g_match.match_state == STATE_PRE_EXTRA_TIME) {
             if (g_match.clock_seconds > 0) {
                 g_match.clock_seconds--;
-            } else if (g_match.match_state == STATE_PRE_MATCH) {
-                g_match.match_state    = STATE_HALF_1;
-                g_match.clock_seconds  = 0;
-                g_match.match_start_unix = (uint32_t)time(nullptr);
-            } else {
-                // PRE_EXTRA_TIME → ET1 picks up at 90:00.
-                g_match.match_state    = STATE_EXTRA_TIME_1;
-                g_match.clock_seconds  = 90u * 60u;
+                mark_dirty();
+            } else if (g_defaults.auto_start_after_break) {
+                // Auto-mode: hand the match phase off immediately when
+                // the countdown hits zero.
+                if (g_match.match_state == STATE_PRE_MATCH) {
+                    g_match.match_state      = STATE_HALF_1;
+                    g_match.clock_seconds    = 0;
+                    g_match.match_start_unix = (uint32_t)time(nullptr);
+                } else {
+                    g_match.match_state   = STATE_EXTRA_TIME_1;
+                    g_match.clock_seconds = 90u * 60u;
+                }
+                mark_dirty();
+            } else if (g_match.clock_running) {
+                // Manual mode: park at 00:00 and stop the clock so the
+                // operator's GO (INTENT_RESUME) actually promotes the
+                // state machine. Only flag dirty once, when we cross
+                // the running → stopped edge.
+                g_match.clock_running = false;
+                mark_dirty();
             }
-            mark_dirty();
         } else {
             g_match.clock_seconds++;
             // Cap at 9999 s (166:39) — covers all of regulation (90:00)
@@ -642,6 +750,7 @@ void fill_state_payload(StatePayload& out, bool pairing_mode, bool gaz4_ok) {
     out.goal_count           = g_match.goal_count;
     out.history_count        = g_history_count;
     out.pk_home_first        = g_match.pk_home_first ? 1 : 0;
+    out.extra_time_played    = g_match.extra_time_played ? 1 : 0;
 
     out.flags = 0;
     if (g_match.clock_running) out.flags |= FLAG_CLOCK_RUNNING;
@@ -653,10 +762,12 @@ void fill_state_payload(StatePayload& out, bool pairing_mode, bool gaz4_ok) {
 }
 
 void fill_defaults_payload(DefaultsPayload& out) {
+    memset(&out, 0, sizeof(out));
     out.half_minutes            = g_defaults.half_minutes;
     out.pause_minutes           = g_defaults.pause_minutes;
     out.auto_blank_after_match  = g_defaults.auto_blank_after_match ? 1 : 0;
     out.prompt_scorer_on_goal   = g_defaults.prompt_scorer_on_goal  ? 1 : 0;
+    out.auto_start_after_break  = g_defaults.auto_start_after_break ? 1 : 0;
 }
 
 } // namespace wb_state

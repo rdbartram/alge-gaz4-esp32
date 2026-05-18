@@ -131,11 +131,40 @@ static void handle_pairing_touch(int16_t x, int16_t y);
 static void draw_link_banner();
 static void check_long_press();
 
+// Controller-local prefs (NOT synced to wallbox — each pult keeps its
+// own backlight setting). 10..100 % maps to 25..255 on the M5 panel.
+static uint8_t g_brightness_pct  = 70;
+static uint8_t g_brightness_edit = 70;
+
+static void apply_brightness() {
+    uint16_t b = (uint16_t)g_brightness_pct * 255u / 100u;
+    if (b < 20) b = 20;             // floor so the screen stays readable
+    M5.Display.setBrightness((uint8_t)b);
+}
+
+static void load_controller_prefs() {
+    Preferences p;
+    p.begin("ctrl", true);
+    g_brightness_pct = p.getUChar("br", 70);
+    p.end();
+    if (g_brightness_pct < 10)  g_brightness_pct = 10;
+    if (g_brightness_pct > 100) g_brightness_pct = 100;
+}
+
+static void save_controller_prefs() {
+    Preferences p;
+    p.begin("ctrl", false);
+    p.putUChar("br", g_brightness_pct);
+    p.end();
+}
+
 // ----- Public ------------------------------------------------------------
 void begin() {
     g_screen = SCREEN_SPLASH;
     g_screen_entered_ms = millis();
     g_invalidate = true;
+    load_controller_prefs();
+    apply_brightness();
     M5.Display.fillScreen(COLOR_BG_DARK);
 }
 
@@ -232,6 +261,17 @@ void tick() {
         if (now - g_last_rendered_ms > 500) g_tick_redraw = true;
     }
 
+    // Layout-affecting change from the wallbox (match_state or
+    // clock_running flipped) → full repaint. Without this the PAUSE
+    // button doesn't become START when the countdown auto-parks at 0,
+    // and screen transitions only follow on the next touch.
+    static uint16_t s_last_layout_v = 0;
+    const uint16_t cur_layout_v = state::layout_version();
+    if (cur_layout_v != s_last_layout_v) {
+        s_last_layout_v = cur_layout_v;
+        g_invalidate = true;
+    }
+
     if (g_invalidate) {
         g_invalidate = false;
         g_tick_redraw = false;
@@ -265,6 +305,20 @@ void tick() {
             go(SCREEN_SETUP);
         }
     }
+
+    // Wallbox can auto-end the shootout the moment it's decided. Watch
+    // for an actual PENALTY_SHOOTOUT → ENDED edge while on the penalty
+    // screen — without this edge check we'd also bounce out of
+    // SCREEN_PENALTY_TOSS (where state is still ENDED from the
+    // previous match) before the operator has fired INTENT_START_PENALTIES.
+    static MatchState s_prev_match_state = STATE_IDLE;
+    const MatchState ms_now = state::peek().match_state;
+    if (g_screen == SCREEN_PENALTY &&
+        s_prev_match_state == STATE_PENALTY_SHOOTOUT &&
+        ms_now == STATE_ENDED) {
+        go(SCREEN_ENDED);
+    }
+    s_prev_match_state = ms_now;
 }
 
 // ----- Dispatcher --------------------------------------------------------
@@ -495,19 +549,23 @@ static void draw_match() {
     auto& d = M5.Display;
     uih::draw_header(s.clock_running ? "LÄUFT" : "PAUSIERT");
 
-    // Top chips: stoppage top-right, undo top-left. Compact so they sit
-    // beside the HEIM/GAST labels without crashing into them.
+    // Top chips: stoppage top-right, undo top-left. The visual stays
+    // small so it doesn't crash into the HEIM/GAST labels at y=52, but
+    // the tap rect is widened so a fingertip can land in the corner
+    // reliably. (Earlier 32×16 chip = visual *and* hit area, which was
+    // why nothing happened when the operator tapped near the corner.)
     char stp_label[8];
     snprintf(stp_label, sizeof(stp_label), "+%u", s.stoppage_minutes);
     const bool near_half_end = (s.clock_seconds > 44u * 60u && s.clock_seconds < 60u * 60u) ||
                                (s.clock_seconds > 89u * 60u);
     const uint16_t stp_color = (s.stoppage_minutes > 0 && near_half_end)
                                    ? COLOR_ACCENT : COLOR_DIM;
-    g_match_btn_stoppage = uih::draw_button(DISPLAY_WIDTH - 38, 32, 32, 16,
-                                            stp_label, COLOR_BG_DARK, stp_color);
+    uih::draw_button(DISPLAY_WIDTH - 38, 32, 32, 16,
+                     stp_label, COLOR_BG_DARK, stp_color);
+    g_match_btn_stoppage = { DISPLAY_WIDTH - 60, HEADER_HEIGHT, 60, 24 };
     if (state::can_undo()) {
-        g_match_btn_undo = uih::draw_button(6, 32, 28, 16, "<<",
-                                            COLOR_BG_DARK, COLOR_ACCENT);
+        uih::draw_button(6, 32, 28, 16, "<<", COLOR_BG_DARK, COLOR_ACCENT);
+        g_match_btn_undo = { 0, HEADER_HEIGHT, 60, 24 };
     } else {
         g_match_btn_undo = {0, 0, 0, 0};
     }
@@ -571,10 +629,21 @@ static void draw_match() {
                          &fonts::efontJA_14);
     }
 
-    // PAUSE/RESUME button + HALBZEIT/MATCH ENDE
+    // Left-side button. During the PRE_* countdowns we replace PAUSE
+    // (pointless on a countdown) with a SKIP button that jumps straight
+    // to the next phase — wallbox-side INTENT_SKIP_COUNTDOWN promotes
+    // PRE_MATCH→HALF_1 / PRE_EXTRA_TIME→EXTRA_TIME_1 immediately. Same
+    // intent fires whether the count is running or parked at 0.
+    const bool in_pre = (s.match_state == STATE_PRE_MATCH ||
+                         s.match_state == STATE_PRE_EXTRA_TIME);
+    const char* pause_label = in_pre
+        ? (s.match_state == STATE_PRE_EXTRA_TIME ? "Verlängerung"
+                                                 : "Match starten")
+        : (s.clock_running ? "PAUSE" : "WEITER");
     g_match_btn_pause = uih::draw_button(10, 204, 140, 30,
-        s.clock_running ? "PAUSE" : "WEITER",
-        s.clock_running ? COLOR_WARN : COLOR_SUCCESS, COLOR_BG_DARK, true);
+        pause_label,
+        in_pre || !s.clock_running ? COLOR_SUCCESS : COLOR_WARN,
+        COLOR_BG_DARK, true);
 
     // Right-side button label depends on which phase we're in. Extra
     // time has its own halftime — the button switches to "ET HALBZEIT"
@@ -699,7 +768,15 @@ static void handle_match_touch(int16_t x, int16_t y) {
     } else if (!is_pre && uih::point_in(g_match_btn_clock, x, y)) {
         open_numpad("Uhr (Min.)", s.clock_seconds / 60, 0, 120, numpad_set_clock);
     } else if (uih::point_in(g_match_btn_pause, x, y)) {
-        if (s.clock_running) espnow_client::send_intent_simple(INTENT_PAUSE); else espnow_client::send_intent_simple(INTENT_RESUME);
+        if (is_pre) {
+            // PRE_* countdowns: button is the "skip directly to next
+            // phase" affordance, not a pause/resume toggle.
+            espnow_client::send_intent_skip_countdown();
+        } else if (s.clock_running) {
+            espnow_client::send_intent_simple(INTENT_PAUSE);
+        } else {
+            espnow_client::send_intent_simple(INTENT_RESUME);
+        }
         vibe_pause();
     } else if (uih::point_in(g_match_btn_halftime, x, y)) {
         const auto ms = s.match_state;
@@ -858,7 +935,10 @@ static void draw_ended() {
 
     uih::draw_score_value( 60,  78, s.home_score_real, COLOR_TEXT);
     uih::draw_score_value(260,  78, s.away_score_real, COLOR_TEXT);
-    uih::draw_clock(DISPLAY_WIDTH / 2, 78, s.clock_seconds, COLOR_DIM);
+    // Smaller clock face so a 3-digit ET final ("120:00") doesn't run
+    // into the score digits left + right of it.
+    uih::draw_clock(DISPLAY_WIDTH / 2, 78, s.clock_seconds, COLOR_DIM,
+                    &fonts::FreeSansBold18pt7b);
 
     char vs[40];
     snprintf(vs, sizeof(vs), "%s  vs.  %s", BRAND_HOME_TEAM, s.opponent);
@@ -868,13 +948,27 @@ static void draw_ended() {
     g_end_btn_new   = uih::draw_button(10,  150, 150, 32, "Neues Match",   COLOR_BG_DARK, COLOR_TEXT);
     g_end_btn_blank = uih::draw_button(170, 150, 140, 32, "Tafel löschen", COLOR_BG_DARK, COLOR_WARN);
 
-    const bool draw_tied = (s.home_score_real == s.away_score_real);
-    g_end_btn_extra = uih::draw_button(10, 188, 150, 32, "Verlängerung",
-        draw_tied ? COLOR_PRIMARY : COLOR_DIM,
-        draw_tied ? COLOR_TEXT    : COLOR_DIM);
-    g_end_btn_penalty = uih::draw_button(170, 188, 140, 32, "Penaltys",
-        draw_tied ? COLOR_PRIMARY : COLOR_DIM,
-        draw_tied ? COLOR_TEXT    : COLOR_DIM);
+    // Tiebreak buttons: Verlängerung is only an option after regulation
+    // (before any ET has been played). Once we've already been through
+    // ET and we're still tied, penalties are the only path left — so
+    // hide the ET button entirely and let Penaltys take the full row.
+    const bool draw_tied  = (s.home_score_real == s.away_score_real);
+    const bool offer_et   = draw_tied && !s.extra_time_played;
+    const bool offer_pen  = draw_tied;
+    if (offer_et) {
+        g_end_btn_extra = uih::draw_button(10, 188, 150, 32, "Verlängerung",
+            COLOR_PRIMARY, COLOR_TEXT);
+        g_end_btn_penalty = uih::draw_button(170, 188, 140, 32, "Penaltys",
+            COLOR_PRIMARY, COLOR_TEXT);
+    } else {
+        g_end_btn_extra = {0, 0, 0, 0};   // not rendered, not tappable
+        if (offer_pen) {
+            g_end_btn_penalty = uih::draw_button(10, 188, 300, 32, "Penaltys",
+                COLOR_PRIMARY, COLOR_TEXT);
+        } else {
+            g_end_btn_penalty = {0, 0, 0, 0};
+        }
+    }
 }
 
 static void handle_ended_touch(int16_t x, int16_t y) {
@@ -951,14 +1045,21 @@ static void handle_penalty_toss_touch(int16_t x, int16_t y) {
 // ============================================================================
 static uih::Rect g_pk_btn_home_score, g_pk_btn_home_miss;
 static uih::Rect g_pk_btn_away_score, g_pk_btn_away_miss;
-static uih::Rect g_pk_btn_end;
+static uih::Rect g_pk_btn_end, g_pk_btn_undo;
 
-static void draw_pk_kick_row(int16_t y, uint8_t taken, uint8_t mask) {
+static void draw_pk_kick_row(int16_t y, uint8_t taken, uint8_t mask,
+                             bool sd_layout) {
     auto& d = M5.Display;
-    const int xs = 80;        // first kick at x=80, after the side label
-    const int box_w = 26;
-    const int step  = 32;
-    for (int i = 0; i < 5; ++i) {
+    // 5 boxes for regulation pens, 8 in sudden-death layout so the
+    // operator can see the per-kick outcome for SD attempts 6/7/8.
+    // Mask is uint8_t so we can store made/missed for the first 8 kicks
+    // — kicks 9+ (rare) just affect score, not the per-kick row.
+    const uint8_t slots = sd_layout ? 8 : 5;
+    const int xs    = 70;
+    const int avail = 240;
+    const int step  = avail / slots;
+    const int box_w = step - 4;
+    for (int i = 0; i < slots; ++i) {
         const int cx = xs + i * step;
         d.drawRoundRect(cx, y, box_w, 26, 3, COLOR_DIM);
         if (i < taken) {
@@ -1017,60 +1118,86 @@ static void draw_penalty() {
         }
     };
 
+    // Sudden death starts the instant both sides have completed the
+    // standard 5-kick round (regardless of tied/not — the operator
+    // hits ENDE when a winner is decided). When SD is active, render
+    // an 8-slot kick row on both sides so attempts 6/7/8 (and their
+    // miss states) are actually visible. Without this expansion an SD
+    // miss left no on-screen feedback and looked like a goal.
+    const bool sd_active = (s.pk_home_taken >= 5 && s.pk_away_taken >= 5);
     side_label(120, "HEIM", g_pk_home_turn);
-    draw_pk_kick_row(120, s.pk_home_taken, s.pk_home_kicks);
+    draw_pk_kick_row(120, s.pk_home_taken, s.pk_home_kicks, sd_active);
     side_label(154, "GAST", !g_pk_home_turn);
-    draw_pk_kick_row(154, s.pk_away_taken, s.pk_away_kicks);
+    draw_pk_kick_row(154, s.pk_away_taken, s.pk_away_kicks, sd_active);
 
-    // Sudden-death indicator. Once either side has taken more than the
-    // regular 5 kicks we're in SD territory. Boxes only show the first
-    // 8 attempts; the BIG score at the top of the screen continues to
-    // tick even on attempts 9–11.
-    if (s.pk_home_taken > 5 || s.pk_away_taken > 5) {
-        char sd[40];
-        snprintf(sd, sizeof(sd), "SUDDEN DEATH  (HEIM %u : GAST %u)",
-                 s.pk_home_taken, s.pk_away_taken);
-        uih::centre_text(DISPLAY_WIDTH / 2, 188, sd, COLOR_WARN,
-                         &fonts::efontJA_14);
+    if (sd_active) {
+        uih::centre_text(DISPLAY_WIDTH / 2, 184, "SUDDEN DEATH",
+                         COLOR_WARN, &fonts::FreeSansBold9pt7b);
     }
 
-    // Three equal-width action buttons.
-    const int bw = 96, gap = 6;
+    // Four action buttons across the bottom row: Tor / Daneben /
+    // Zurück (undo last kick → wallbox-side INTENT_UNDO) / ENDE.
+    // 72 px wide, 4 px gap → 4*72 + 3*4 = 300, centred margins 10 each.
+    const int bw = 72, gap = 4;
+    const int x0 = 10;
+    auto bx = [&](int col) { return x0 + col * (bw + gap); };
     if (g_pk_home_turn) {
-        g_pk_btn_home_score = uih::draw_button(10,              198, bw, 30, "Tor +",     COLOR_SUCCESS, COLOR_BG_DARK);
-        g_pk_btn_home_miss  = uih::draw_button(10 + bw + gap,   198, bw, 30, "Daneben X", COLOR_ERROR,   COLOR_BG_DARK);
+        g_pk_btn_home_score = uih::draw_button(bx(0), 198, bw, 30, "Tor +",
+                                               COLOR_SUCCESS, COLOR_BG_DARK);
+        g_pk_btn_home_miss  = uih::draw_button(bx(1), 198, bw, 30, "Daneben",
+                                               COLOR_ERROR,   COLOR_BG_DARK);
     } else {
-        g_pk_btn_away_score = uih::draw_button(10,              198, bw, 30, "Tor +",     COLOR_SUCCESS, COLOR_BG_DARK);
-        g_pk_btn_away_miss  = uih::draw_button(10 + bw + gap,   198, bw, 30, "Daneben X", COLOR_ERROR,   COLOR_BG_DARK);
+        g_pk_btn_away_score = uih::draw_button(bx(0), 198, bw, 30, "Tor +",
+                                               COLOR_SUCCESS, COLOR_BG_DARK);
+        g_pk_btn_away_miss  = uih::draw_button(bx(1), 198, bw, 30, "Daneben",
+                                               COLOR_ERROR,   COLOR_BG_DARK);
     }
-    g_pk_btn_end = uih::draw_button(10 + 2*(bw + gap), 198, bw, 30, "ENDE", COLOR_PRIMARY, COLOR_TEXT);
+    g_pk_btn_undo = uih::draw_button(bx(2), 198, bw, 30, "Zurück",
+                                     COLOR_BG_DARK, COLOR_ACCENT);
+    g_pk_btn_end  = uih::draw_button(bx(3), 198, bw, 30, "ENDE",
+                                     COLOR_PRIMARY, COLOR_TEXT);
 }
 
 static void handle_penalty_touch(int16_t x, int16_t y) {
+    // Undo + ENDE are first so they're never shadowed by stale
+    // goal/miss button rects (which switch sides when g_pk_home_turn
+    // flips). Goal/miss handling sits behind a single return so the
+    // function can't fall through to ENDE on a stray tap.
+    if (uih::point_in(g_pk_btn_undo, x, y)) {
+        // INTENT_UNDO rewinds the wallbox's last state-affecting change
+        // — perfect for "I tapped Tor by accident, it was a miss". The
+        // wallbox's undo ring covers score + clock + match-state +
+        // stoppage; flip our local pk turn back to match.
+        espnow_client::send_intent_simple(INTENT_UNDO);
+        g_pk_home_turn = !g_pk_home_turn;
+        vibe_double();
+        return;
+    }
+    if (uih::point_in(g_pk_btn_end, x, y)) {
+        espnow_client::send_intent_simple(INTENT_END_MATCH);
+        go(SCREEN_ENDED);
+        return;
+    }
     if (g_pk_home_turn) {
         if (uih::point_in(g_pk_btn_home_score, x, y)) {
             espnow_client::send_intent_pk_kick(true, true);
-                g_pk_home_turn = false;
+            g_pk_home_turn = false;
             vibe_short();
         } else if (uih::point_in(g_pk_btn_home_miss, x, y)) {
             espnow_client::send_intent_pk_kick(true, false);
-                g_pk_home_turn = false;
+            g_pk_home_turn = false;
             vibe_double();
         }
     } else {
         if (uih::point_in(g_pk_btn_away_score, x, y)) {
             espnow_client::send_intent_pk_kick(false, true);
-                g_pk_home_turn = true;
+            g_pk_home_turn = true;
             vibe_short();
         } else if (uih::point_in(g_pk_btn_away_miss, x, y)) {
             espnow_client::send_intent_pk_kick(false, false);
-                g_pk_home_turn = true;
+            g_pk_home_turn = true;
             vibe_double();
         }
-    }
-    if (uih::point_in(g_pk_btn_end, x, y)) {
-        espnow_client::send_intent_simple(INTENT_END_MATCH);
-        go(SCREEN_ENDED);
     }
 }
 
@@ -1294,8 +1421,10 @@ static void handle_settings_touch(int16_t x, int16_t y) {
     } else if (uih::point_in(g_set_btn_defaults, x, y)) {
         // Snapshot the wallbox's current Vorgaben into our local edit
         // copy before showing the screen, so dec/inc start from the
-        // real values rather than zero.
+        // real values rather than zero. Brightness is controller-local
+        // — seed the edit from the currently-applied value.
         g_defaults_edit = state::defaults();
+        g_brightness_edit = g_brightness_pct;
         go(SCREEN_DEFAULTS);
     }
 }
@@ -1664,6 +1793,8 @@ static uih::Rect g_def_half_dec, g_def_half_inc;
 static uih::Rect g_def_pause_dec, g_def_pause_inc;
 static uih::Rect g_def_autoblank_toggle;
 static uih::Rect g_def_scorer_toggle;
+static uih::Rect g_def_autostart_toggle;
+static uih::Rect g_def_bright_dec, g_def_bright_inc;
 static uih::Rect g_def_back;
 
 static void draw_defaults() {
@@ -1679,48 +1810,43 @@ static void draw_defaults() {
         d.setFont(&fonts::efontJA_16);
         d.setTextDatum(middle_left);
         d.drawString(label, 10, y_baseline);
-        dec = uih::draw_button(158, y_baseline - 13, 26, 24, "-",
+        dec = uih::draw_button(158, y_baseline - 11, 26, 22, "-",
                                COLOR_BG_DARK, COLOR_WARN);
         d.setTextColor(COLOR_ACCENT, COLOR_BG_DARK);
         d.setFont(&fonts::FreeSansBold12pt7b);
         d.setTextDatum(middle_center);
         d.drawString(value, 232, y_baseline);
-        inc = uih::draw_button(282, y_baseline - 13, 26, 24, "+",
+        inc = uih::draw_button(282, y_baseline - 11, 26, 22, "+",
                                COLOR_BG_DARK, COLOR_SUCCESS);
     };
+    auto toggle_row = [&](int y_baseline, const char* label, bool on,
+                          uih::Rect& tgl) {
+        d.setTextColor(COLOR_TEXT, COLOR_BG_DARK);
+        d.setFont(&fonts::efontJA_16);
+        d.setTextDatum(middle_left);
+        d.drawString(label, 10, y_baseline);
+        tgl = uih::draw_button(158, y_baseline - 11, 150, 22,
+                               on ? "AN" : "AUS",
+                               on ? COLOR_SUCCESS : COLOR_DIM, COLOR_BG_DARK);
+    };
 
-    char b1[8], b2[8];
+    char b1[8], b2[8], b3[8];
     snprintf(b1, sizeof(b1), "%u min", g_defaults_edit.half_minutes);
     snprintf(b2, sizeof(b2), "%u min", g_defaults_edit.pause_minutes);
-    // "Halbzeit-Länge" now only applies to the Freundschaftsspiel preset
-    // (every other preset uses its own half_minutes from matchmodes.cpp).
-    // Label tightened to "HZ Freund." so it's clear which.
-    value_row( 60, "HZ Freund.:", b1, g_def_half_dec,  g_def_half_inc);
-    value_row( 98, "Halbzeitpause:",   b2, g_def_pause_dec, g_def_pause_inc);
+    snprintf(b3, sizeof(b3), "%u %%",  g_brightness_edit);
+    // Six 28-px-spaced rows + back button. Rows at y=42/70/98/126/154/182,
+    // back at y=204.
+    value_row ( 42, "HZ Freund.:",   b1, g_def_half_dec,  g_def_half_inc);
+    value_row ( 70, "Halbzeitpause:", b2, g_def_pause_dec, g_def_pause_inc);
+    toggle_row( 98, "Auto-löschen:",  g_defaults_edit.auto_blank_after_match,
+                                      g_def_autoblank_toggle);
+    toggle_row(126, "Torschütze:",    g_defaults_edit.prompt_scorer_on_goal,
+                                      g_def_scorer_toggle);
+    toggle_row(154, "Auto-Start:",    g_defaults_edit.auto_start_after_break,
+                                      g_def_autostart_toggle);
+    value_row (182, "Helligkeit:",    b3, g_def_bright_dec, g_def_bright_inc);
 
-    // Toggle rows match the column span of the value rows above
-    // (dec at x=158 → inc ends at x=308). draw_button() leaves the
-    // text datum at middle_center, so we have to RE-SET middle_left
-    // before each label drawString or "Torschütze:" gets centered on
-    // x=10 and "Torsc" spills off the left edge of the screen.
-    d.setTextColor(COLOR_TEXT, COLOR_BG_DARK);
-    d.setFont(&fonts::efontJA_16);
-
-    d.setTextDatum(middle_left);
-    d.drawString("Auto-löschen:", 10, 140);
-    g_def_autoblank_toggle = uih::draw_button(158, 127, 150, 24,
-        g_defaults_edit.auto_blank_after_match ? "AN" : "AUS",
-        g_defaults_edit.auto_blank_after_match ? COLOR_SUCCESS : COLOR_DIM,
-        COLOR_BG_DARK);
-
-    d.setTextDatum(middle_left);
-    d.drawString("Torschütze:", 10, 178);
-    g_def_scorer_toggle = uih::draw_button(158, 165, 150, 24,
-        g_defaults_edit.prompt_scorer_on_goal ? "AN" : "AUS",
-        g_defaults_edit.prompt_scorer_on_goal ? COLOR_SUCCESS : COLOR_DIM,
-        COLOR_BG_DARK);
-
-    g_def_back = uih::draw_button(10, 208, DISPLAY_WIDTH - 20, 28,
+    g_def_back = uih::draw_button(10, 208, DISPLAY_WIDTH - 20, 26,
                                   "< Speichern + Zurück", COLOR_PRIMARY, COLOR_TEXT);
 }
 
@@ -1740,13 +1866,36 @@ static void handle_defaults_touch(int16_t x, int16_t y) {
     } else if (uih::point_in(g_def_scorer_toggle, x, y)) {
         g_defaults_edit.prompt_scorer_on_goal = !g_defaults_edit.prompt_scorer_on_goal;
         changed = true;
+    } else if (uih::point_in(g_def_autostart_toggle, x, y)) {
+        g_defaults_edit.auto_start_after_break = !g_defaults_edit.auto_start_after_break;
+        changed = true;
+    } else if (uih::point_in(g_def_bright_dec, x, y)) {
+        if (g_brightness_edit > 10) {
+            g_brightness_edit -= 10;
+            // Live-apply so the operator sees the change before saving.
+            g_brightness_pct = g_brightness_edit;
+            apply_brightness();
+            changed = true;
+        }
+    } else if (uih::point_in(g_def_bright_inc, x, y)) {
+        if (g_brightness_edit < 100) {
+            g_brightness_edit += 10;
+            g_brightness_pct = g_brightness_edit;
+            apply_brightness();
+            changed = true;
+        }
     } else if (uih::point_in(g_def_back, x, y)) {
-        // Ship the edited defaults back to the wallbox and bounce out.
+        // Ship the wallbox-synced defaults back over the radio and
+        // persist the controller-local brightness to NVS.
         espnow_client::send_intent_set_defaults(
             g_defaults_edit.half_minutes,
             g_defaults_edit.pause_minutes,
             g_defaults_edit.auto_blank_after_match,
-            g_defaults_edit.prompt_scorer_on_goal);
+            g_defaults_edit.prompt_scorer_on_goal,
+            g_defaults_edit.auto_start_after_break);
+        g_brightness_pct = g_brightness_edit;
+        save_controller_prefs();
+        apply_brightness();
         go(SCREEN_SETTINGS);
     }
     // No save-while-editing: the wallbox-side write only happens on

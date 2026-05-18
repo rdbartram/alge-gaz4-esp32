@@ -186,6 +186,10 @@ void send_intent_start_penalties(bool home_first) {
     send_intent(it);
 }
 
+void send_intent_skip_countdown() {
+    send_intent_simple(INTENT_SKIP_COUNTDOWN);
+}
+
 void send_intent_pk_kick(bool home_team, bool scored) {
     IntentPayload it = {};
     it.intent_type = INTENT_PK_KICK;
@@ -219,13 +223,15 @@ void send_intent_register_goal(bool home_team, uint8_t jersey) {
 }
 
 void send_intent_set_defaults(uint8_t half_min, uint8_t pause_min,
-                              bool autoblank, bool prompt_scorer) {
+                              bool autoblank, bool prompt_scorer,
+                              bool auto_start_after_break) {
     IntentPayload it = {};
     it.intent_type = INTENT_SET_DEFAULTS;
     it.defaults.half_minutes           = half_min;
     it.defaults.pause_minutes          = pause_min;
-    it.defaults.auto_blank_after_match = autoblank     ? 1 : 0;
-    it.defaults.prompt_scorer_on_goal  = prompt_scorer ? 1 : 0;
+    it.defaults.auto_blank_after_match = autoblank              ? 1 : 0;
+    it.defaults.prompt_scorer_on_goal  = prompt_scorer          ? 1 : 0;
+    it.defaults.auto_start_after_break = auto_start_after_break ? 1 : 0;
     send_intent(it);
 }
 

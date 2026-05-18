@@ -71,6 +71,8 @@ struct Match {
     uint8_t    pk_away_kicks;
     uint8_t    pk_home_taken;
     uint8_t    pk_away_taken;
+    uint8_t    pk_home_made;       // explicit running goal count (separate from
+    uint8_t    pk_away_made;       // home/away_score_real, which the shootout also bumps)
     bool       pk_home_first;     // true if HEIM took the first kick
 
     char       opponent[24];
@@ -80,6 +82,12 @@ struct Match {
     uint16_t   pre_match_seconds;
     uint8_t    goal_count;
     GoalEntry  goals[MAX_GOALS_PER_MATCH];
+
+    // True once the match has entered any extra-time phase
+    // (PRE_EXTRA_TIME, ET_1, ET_HALFTIME, ET_2). Lets the ENDED screen
+    // hide the "Verlängerung" button after ET has already been played,
+    // so the only remaining tiebreak path is penalties.
+    bool       extra_time_played;
 };
 
 struct Defaults {
@@ -87,6 +95,11 @@ struct Defaults {
     uint8_t pause_minutes;
     bool    auto_blank_after_match;
     bool    prompt_scorer_on_goal;
+    // When false, countdowns (PRE_MATCH, PRE_EXTRA_TIME, HALFTIME) park
+    // at 00:00 and wait for the operator's GO button. When true, they
+    // self-advance once the clock hits zero. Default false — referees
+    // don't run off our scoreboard so the operator should pace it.
+    bool    auto_start_after_break;
 };
 
 // Combined snapshot: wallbox-side display state PLUS the full match state.

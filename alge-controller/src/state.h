@@ -40,6 +40,7 @@ struct Match {
 
     uint8_t    stoppage_minutes;
     uint8_t    goal_count;
+    bool       extra_time_played;
     char       opponent[24];
 };
 
@@ -48,6 +49,7 @@ struct Defaults {
     uint8_t pause_minutes;
     bool    auto_blank_after_match;
     bool    prompt_scorer_on_goal;
+    bool    auto_start_after_break;
 };
 
 // Compact history entry — what the wallbox sends per MSG_HISTORY packet.
@@ -89,6 +91,13 @@ bool  gaz4_ok();                      // wallbox flag (FLAG_GAZ4_OK)
 int8_t last_rssi();
 uint32_t ms_since_last_state();       // for FUNK VERLOREN gating
 bool  link_live();                    // helper: ms_since_last_state < 5000
+
+// Bumped whenever an incoming MSG_STATE flips a field that affects
+// the on-screen LAYOUT (match_state, clock_running). The UI watches
+// this so it can trigger a full repaint — the per-second tick path
+// only repaints the clock + status strip and would otherwise miss
+// e.g. the PAUSE → START transition when a countdown parks at 0.
+uint16_t layout_version();
 
 const matchmodes::Preset& preset();   // matchmodes is still local to controller
 

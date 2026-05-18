@@ -24,6 +24,7 @@ static bool     g_pairing_mode  = false;
 static bool     g_gaz4_ok       = false;
 static int8_t   g_last_rssi     = -127;
 static uint32_t g_last_msg_ms   = 0;
+static uint16_t g_layout_version = 0;
 
 void begin() {
     memset(&g_match,    0, sizeof(g_match));
@@ -35,9 +36,15 @@ void begin() {
     g_defaults.pause_minutes           = 15;
     g_defaults.auto_blank_after_match  = true;
     g_defaults.prompt_scorer_on_goal   = false;
+    g_defaults.auto_start_after_break  = false;
 }
 
 void update_from_state(const StatePayload& s, int8_t rssi) {
+    const bool new_running = (s.flags & FLAG_CLOCK_RUNNING) != 0;
+    if (s.match_state != (uint8_t)g_match.match_state ||
+        new_running   != g_match.clock_running) {
+        g_layout_version++;
+    }
     g_match.match_state          = (MatchState)s.match_state;
     g_match.preset_idx           = s.preset_idx;
     g_match.home_score_real      = s.home_score_real;
@@ -54,6 +61,7 @@ void update_from_state(const StatePayload& s, int8_t rssi) {
     g_match.pk_home_first        = (s.pk_home_first != 0);
     g_match.stoppage_minutes     = s.stoppage_minutes;
     g_match.goal_count           = s.goal_count;
+    g_match.extra_time_played    = (s.extra_time_played != 0);
     g_match.clock_running        = (s.flags & FLAG_CLOCK_RUNNING) != 0;
     strncpy(g_match.opponent, s.opponent, sizeof(g_match.opponent) - 1);
     g_match.opponent[sizeof(g_match.opponent) - 1] = '\0';
@@ -71,6 +79,7 @@ void update_from_defaults(const DefaultsPayload& d) {
     g_defaults.pause_minutes          = d.pause_minutes;
     g_defaults.auto_blank_after_match = (d.auto_blank_after_match != 0);
     g_defaults.prompt_scorer_on_goal  = (d.prompt_scorer_on_goal  != 0);
+    g_defaults.auto_start_after_break = (d.auto_start_after_break != 0);
 }
 
 void update_from_history(const HistoryPayload& h) {
@@ -117,6 +126,8 @@ uint32_t ms_since_last_state() {
 bool link_live() {
     return g_last_msg_ms != 0 && (millis() - g_last_msg_ms) < 5000;
 }
+
+uint16_t layout_version() { return g_layout_version; }
 
 const matchmodes::Preset& preset() { return matchmodes::get(g_match.preset_idx); }
 
