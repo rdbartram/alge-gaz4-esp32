@@ -6,11 +6,13 @@
 #include <stdint.h>
 
 // ----- Brand --------------------------------------------------------------
-#define BRAND_NAME        "FC Waengi 1967"
-#define BRAND_NAME_UTF8   "FC W\xC3\xA4ngi 1967"
+// Brand strings are UTF-8 with real umlauts. Every place that draws these
+// to the LCD must pick a u8g2-style font (efontJA_*); the FreeSans family
+// in M5GFX is ASCII-only and renders ä/ö/ü as missing-glyph boxes.
+#define BRAND_NAME        "FC Wängi 1967"
 #define BRAND_TAGLINE     "Fussball mit Herz"
-#define BRAND_SLOGAN      "WAENGI . 1967 NEVER GIVE UP"
-#define BRAND_HOME_TEAM   "FC Waengi 1"
+#define BRAND_SLOGAN      "WÄNGI . 1967 NEVER GIVE UP"
+#define BRAND_HOME_TEAM   "FC Wängi 1"
 #define BRAND_FOUNDED     1967
 
 // RGB565 colour palette (handoff section 4).

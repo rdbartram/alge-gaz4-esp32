@@ -27,9 +27,11 @@ void draw_score_digit(int16_t cx, int16_t cy, uint8_t value, uint16_t color);
 // Draws a 2-digit score (handles >=10 case which the board can't show).
 void draw_score_value(int16_t cx, int16_t cy, uint8_t value, uint16_t color);
 
-// Draws the big clock (MM:SS) centred at (cx, cy).
+// Draws the clock (MM:SS) centred at (cx, cy). Defaults to the big 7-seg
+// Font7 face; pass a narrower font (e.g. FreeSansBold18pt7b) when the
+// match screen needs the clock to fit between the +/- buttons.
 void draw_clock(int16_t cx, int16_t cy, uint16_t total_seconds,
-                uint16_t color);
+                uint16_t color, const lgfx::IFont* font = nullptr);
 
 // Draw a small label above a big number.
 void draw_label(int16_t cx, int16_t y, const char* text, uint16_t color);

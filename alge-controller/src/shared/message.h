@@ -35,6 +35,7 @@ enum MatchState : uint8_t {
     STATE_PAUSED_ET        = 0x0A,
     STATE_PENALTY_SHOOTOUT = 0x0B,
     STATE_PRE_MATCH        = 0x0C,   // count-down to kickoff
+    STATE_ET_HALFTIME      = 0x0D,   // pause between ET1 and ET2
 };
 
 // ----- Command types ------------------------------------------------------

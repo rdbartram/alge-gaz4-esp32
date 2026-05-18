@@ -206,9 +206,16 @@ void loop() {
     }
 
     wb_maintenance::tick();
+    // Display BEFORE the GAZ4 scheduler: tx_goal_flash() and the
+    // multi-frame burst transmits each spend ~1-1.5 s in blocking
+    // Serial1.flush() + delay() loops at 2400 baud. If gaz4 runs first
+    // the TFT can't show the new score until the burst finishes, which
+    // makes scores look like they jump in late. Drawing first means the
+    // TFT shows the live state immediately and the GAZ4 board catches
+    // up at its own speed.
+    wb_display::tick();
     gaz4_tx_scheduler();
     handle_button();
     connection_watchdog();
-    wb_display::tick();
     delay(5);
 }

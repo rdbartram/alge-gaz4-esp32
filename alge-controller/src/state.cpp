@@ -218,8 +218,15 @@ void resume() {
     switch (g.match_state) {
     case STATE_PAUSED_H1: g.match_state = STATE_HALF_1;       break;
     case STATE_PAUSED_H2: g.match_state = STATE_HALF_2;       break;
-    case STATE_PAUSED_ET: g.match_state = STATE_EXTRA_TIME_1; break;
-    case STATE_HALFTIME:  g.match_state = STATE_HALF_2;       break;
+    case STATE_PAUSED_ET:
+        // PAUSED_ET is shared between ET1 and ET2 — disambiguate by
+        // clock time: ET2 starts at 105:00, anything earlier is ET1.
+        g.match_state = (g.clock_seconds >= 105u * 60u)
+                      ? STATE_EXTRA_TIME_2
+                      : STATE_EXTRA_TIME_1;
+        break;
+    case STATE_HALFTIME:    g.match_state = STATE_HALF_2;       break;
+    case STATE_ET_HALFTIME: g.match_state = STATE_EXTRA_TIME_2; break;
     default: break;
     }
     g.clock_running = true;
@@ -227,17 +234,27 @@ void resume() {
 }
 
 void start_halftime() {
-    g.half1_end_seconds = g.clock_seconds;
-    g.match_state = STATE_HALFTIME;
+    // Triggered by the right-side match-screen button. From regular H1
+    // we go into a regular HALFTIME (then 2.HZ STARTEN); from ET1 we
+    // go into an ET_HALFTIME (then ET2 STARTEN). The state itself is
+    // enough to remember which path to take.
+    const bool from_et = (g.match_state == STATE_EXTRA_TIME_1 ||
+                          g.match_state == STATE_PAUSED_ET);
+    if (from_et) {
+        g.match_state = STATE_ET_HALFTIME;
+    } else {
+        g.half1_end_seconds = g.clock_seconds;
+        g.match_state = STATE_HALFTIME;
+    }
     g.clock_running = false;
     g.pause_target_seconds = (uint16_t)(DEFAULT_PAUSE_LEN_MIN) * 60u;
     save();
 }
 
-void start_half_2(bool reset_clock_to_45) {
+void start_half_2(bool reset_clock_to_45, uint16_t reset_target_seconds) {
     g.match_state = STATE_HALF_2;
     if (reset_clock_to_45) {
-        g.clock_seconds = 45u * 60u;
+        g.clock_seconds = reset_target_seconds;
     } else {
         g.clock_seconds = g.half1_end_seconds;
     }

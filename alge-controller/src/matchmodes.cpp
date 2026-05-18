@@ -13,7 +13,7 @@ const Preset PRESETS[] = {
     {"E-Junioren",             "2 x 25 Min . 7-a-side",         25, 50, false},
     {"F-Junioren",             "2 x 20 Min",                    20, 40, false},
     {"G-Junioren (Bambini)",   "2 x 15 Min",                    15, 30, false},
-    {"Freundschaftsspiel",     "Eigene Zeit waehlen",           45, 90, true},
+    {"Freundschaftsspiel",     "Eigene Zeit wählen",            45, 90, true},
 };
 const uint8_t PRESET_COUNT = sizeof(PRESETS) / sizeof(PRESETS[0]);
 

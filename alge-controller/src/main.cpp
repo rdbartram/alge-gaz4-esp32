@@ -38,7 +38,9 @@ void setup() {
     M5.Display.setRotation(1);
     M5.Display.setBrightness(180);
     M5.Display.fillScreen(COLOR_BG_DARK);
-    Serial.println("[main] display initialised");
+    Serial.printf("[main] display %dx%d, board=%d\n",
+                  M5.Display.width(), M5.Display.height(),
+                  (int)M5.getBoard());
 
     state::begin();
     espnow_client::begin();

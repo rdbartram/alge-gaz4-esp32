@@ -100,7 +100,10 @@ void start_match(uint8_t preset_idx, const char* opponent);
 void pause();
 void resume();
 void start_halftime();
-void start_half_2(bool reset_clock_to_45);
+// reset_target_seconds only consulted when reset_clock_to_45=true —
+// lets the UI pass the operator-configured Halbzeit-Länge in seconds
+// (default 45 min = 2700 s) instead of hardcoding 45:00 here.
+void start_half_2(bool reset_clock_to_45, uint16_t reset_target_seconds);
 void end_match();
 void start_extra_time_1();
 void start_extra_time_2();

@@ -21,6 +21,7 @@ enum Screen : uint8_t {
     SCREEN_NUMPAD,
     SCREEN_HISTORY,
     SCREEN_DEFAULTS,
+    SCREEN_CONFIRM,   // generic Yes/No prompt used before destructive actions
 };
 
 void begin();
