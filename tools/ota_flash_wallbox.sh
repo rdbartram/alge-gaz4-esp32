@@ -240,8 +240,10 @@ if [[ -f "$CONTROLLER_BIN" ]]; then
     done
 
     echo "[ota] Uploading $CONTROLLER_BIN to http://$WALLBOX_IP/controller-update ..."
+    # 300 s — SPIFFS on ESP32 writes at ~15 KB/s; a 2.3 MB controller
+    # binary takes ~2.5 minutes to land. 60 s timed out at ~40 %.
     RESP_BODY="/tmp/ota_ctrl_response.$$"
-    http_status=$(curl --max-time 60 \
+    http_status=$(curl --max-time 300 \
         --progress-bar \
         --form "firmware=@$CONTROLLER_BIN" \
         --write-out '%{http_code}' \
