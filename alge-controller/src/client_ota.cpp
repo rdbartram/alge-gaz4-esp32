@@ -89,40 +89,59 @@ void step() {
         return;
 
     case PHASE_JOIN_AP: {
-        if (WiFi.status() == WL_CONNECTED) {
-            Serial.printf("[ota] joined, local IP %s\n",
-                          WiFi.localIP().toString().c_str());
-
-            // Open the HTTP request — getStreamPtr() lets us read bytes
-            // a chunk at a time from step() without blocking.
-            char url[64];
-            snprintf(url, sizeof(url), "http://192.168.4.1%s",
-                     g_offer.fetch_path);
-            g_http.begin(url);
-            int code = g_http.GET();
-            if (code != HTTP_CODE_OK) {
-                char m[64];
-                snprintf(m, sizeof(m), "HTTP %d", code);
-                fail(m);
-                return;
-            }
-            const int total = g_http.getSize();
-            if (total <= 0) { fail("zero-byte response"); return; }
-            g_bytes_total = total;
-
-            if (!Update.begin(total)) {
-                fail(Update.errorString());
-                return;
-            }
-            if (g_offer.md5_hex[0]) Update.setMD5(g_offer.md5_hex);
-
-            g_stream = g_http.getStreamPtr();
-            g_phase  = PHASE_DOWNLOAD;
+        if (WiFi.status() != WL_CONNECTED) {
+            if (millis() - g_phase_t0 > 15000) fail("AP join timeout");
             return;
         }
-        if (millis() - g_phase_t0 > 15000) {
-            fail("AP join timeout");
+        // Associated, but DHCP may not have finished yet — WiFi.status()
+        // flips to WL_CONNECTED on association, the lease arrives a few
+        // hundred ms later. If we begin HTTP before localIP is set, the
+        // TCP connect returns -1 (CONNECTION_REFUSED). Wait for a non-
+        // zero address before moving on.
+        if (WiFi.localIP() == IPAddress(0, 0, 0, 0)) {
+            if (millis() - g_phase_t0 > 15000) fail("no DHCP lease");
+            return;
         }
+        Serial.printf("[ota] joined, local IP %s\n",
+                      WiFi.localIP().toString().c_str());
+
+        // Open the HTTP request — getStreamPtr() lets us read bytes
+        // a chunk at a time from step() without blocking. One retry
+        // covers the brief window where the wall-box's WebServer
+        // accept-loop hasn't tasted the new connection yet.
+        char url[64];
+        snprintf(url, sizeof(url), "http://192.168.4.1%s",
+                 g_offer.fetch_path);
+        int code = -1;
+        for (int attempt = 0; attempt < 3 && code != HTTP_CODE_OK; ++attempt) {
+            if (attempt > 0) {
+                g_http.end();
+                delay(500);
+            }
+            g_http.begin(url);
+            code = g_http.GET();
+            Serial.printf("[ota] GET %s -> %d (attempt %d)\n",
+                          url, code, attempt + 1);
+        }
+        if (code != HTTP_CODE_OK) {
+            char m[80];
+            snprintf(m, sizeof(m), "HTTP %d @ %s",
+                     code, WiFi.localIP().toString().c_str());
+            fail(m);
+            return;
+        }
+        const int total = g_http.getSize();
+        if (total <= 0) { fail("zero-byte response"); return; }
+        g_bytes_total = total;
+
+        if (!Update.begin(total)) {
+            fail(Update.errorString());
+            return;
+        }
+        if (g_offer.md5_hex[0]) Update.setMD5(g_offer.md5_hex);
+
+        g_stream = g_http.getStreamPtr();
+        g_phase  = PHASE_DOWNLOAD;
         return;
     }
 
