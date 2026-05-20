@@ -227,13 +227,19 @@ fi
 # before proceeding.
 if [[ -f "$CONTROLLER_BIN" ]]; then
     echo "[ota] Wall-box rebooting — re-joining $WALLBOX_SSID..."
-    sleep 5    # give the wall-box a head start to come back up
+    # First boot after a LittleFS firmware flash reformats the data
+    # partition (5–30 s of unresponsiveness before WiFi is back). Be
+    # patient: 10 s sleep, 15 join attempts with 5 s gaps = up to ~90 s
+    # of retry budget on top.
+    sleep 10
 
     JOINED=0
-    for attempt in 1 2 3 4 5 6 7 8 9 10; do
-        if networksetup -setairportnetwork "$WIFI_IF" \
-                "$WALLBOX_SSID" "$WALLBOX_PASS" 2>&1 | grep -qi "could not"; then
-            sleep 3
+    for attempt in $(seq 1 15); do
+        echo "[ota]   re-join attempt $attempt/15..."
+        OUT=$(networksetup -setairportnetwork "$WIFI_IF" \
+                "$WALLBOX_SSID" "$WALLBOX_PASS" 2>&1)
+        if echo "$OUT" | grep -qi "could not"; then
+            sleep 5
             continue
         fi
         for _ in $(seq 1 10); do
