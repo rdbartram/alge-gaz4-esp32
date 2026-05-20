@@ -102,23 +102,33 @@ void step() {
             if (millis() - g_phase_t0 > 15000) fail("no DHCP lease");
             return;
         }
-        Serial.printf("[ota] joined, local IP %s\n",
+        Serial.printf("[ota] joined, local IP %s — settling 1 s\n",
                       WiFi.localIP().toString().c_str());
 
+        // Even after DHCP completes, the wall-box's WebServer accept
+        // loop is processing the new STA association via its main
+        // loop's handleClient() polling — give it a beat before the
+        // first TCP SYN lands. Without this the first attempt nearly
+        // always returns -1 (CONNECTION_REFUSED).
+        delay(1000);
+
         // Open the HTTP request — getStreamPtr() lets us read bytes
-        // a chunk at a time from step() without blocking. One retry
-        // covers the brief window where the wall-box's WebServer
-        // accept-loop hasn't tasted the new connection yet.
+        // a chunk at a time from step() without blocking. Five
+        // retries with 1 s spacing covers a wall-box that's busy
+        // mid-burst on the GAZ4 UART (each burst blocks for ~100-
+        // 200 ms; under load we can miss several heartbeats).
         char url[64];
         snprintf(url, sizeof(url), "http://192.168.4.1%s",
                  g_offer.fetch_path);
         int code = -1;
-        for (int attempt = 0; attempt < 3 && code != HTTP_CODE_OK; ++attempt) {
+        for (int attempt = 0; attempt < 5 && code != HTTP_CODE_OK; ++attempt) {
             if (attempt > 0) {
                 g_http.end();
-                delay(500);
+                delay(1000);
             }
             g_http.begin(url);
+            g_http.setConnectTimeout(8000);   // default 5 s -> 8 s
+            g_http.setTimeout(10000);
             code = g_http.GET();
             Serial.printf("[ota] GET %s -> %d (attempt %d)\n",
                           url, code, attempt + 1);
