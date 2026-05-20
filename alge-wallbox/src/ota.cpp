@@ -244,8 +244,26 @@ void begin() {
     WiFi.softAP(AP_SSID, AP_PASSWORD, CHANNEL, /*hidden=*/0, /*max_conn=*/6);
     WiFi.setHostname(HOSTNAME);
 
-    Serial.printf("[ota] SoftAP up: SSID=%s  IP=%s\n", AP_SSID,
-                  WiFi.softAPIP().toString().c_str());
+    Serial.printf("[ota] SoftAP up: SSID=%s  IP=%s  channel=%u  max_conn=%u\n",
+                  AP_SSID, WiFi.softAPIP().toString().c_str(),
+                  (unsigned)CHANNEL, 6u);
+
+    // Log every STA association/disassociation event so we can correlate
+    // a failed controller-side TCP probe with what the wall-box actually
+    // saw on the radio.
+    WiFi.onEvent([](arduino_event_id_t event, arduino_event_info_t info) {
+        if (event == ARDUINO_EVENT_WIFI_AP_STACONNECTED) {
+            const uint8_t* m = info.wifi_ap_staconnected.mac;
+            Serial.printf("[ota] AP+ STA %02X:%02X:%02X:%02X:%02X:%02X joined "
+                          "(aid=%u)\n",
+                          m[0], m[1], m[2], m[3], m[4], m[5],
+                          (unsigned)info.wifi_ap_staconnected.aid);
+        } else if (event == ARDUINO_EVENT_WIFI_AP_STADISCONNECTED) {
+            const uint8_t* m = info.wifi_ap_stadisconnected.mac;
+            Serial.printf("[ota] AP- STA %02X:%02X:%02X:%02X:%02X:%02X left\n",
+                          m[0], m[1], m[2], m[3], m[4], m[5]);
+        }
+    });
 
     // LittleFS holds the bundled controller .bin so paired controllers can
     // pull it over HTTP after a heartbeat-triggered MSG_FIRMWARE_AVAIL
