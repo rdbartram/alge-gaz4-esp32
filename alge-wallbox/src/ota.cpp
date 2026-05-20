@@ -22,7 +22,7 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <Update.h>
-#include <SPIFFS.h>
+#include <LittleFS.h>
 #include <MD5Builder.h>
 
 namespace wb_ota {
@@ -48,7 +48,7 @@ uint32_t bytes_received() { return g_bytes_received; }
 uint32_t bytes_total()    { return g_bytes_total; }
 
 // --- Bundled controller firmware -----------------------------------------
-// The controller binary lives at /controller.bin in SPIFFS. On boot we
+// The controller binary lives at /controller.bin in LittleFS. On boot we
 // scan its size + MD5 once so MSG_FIRMWARE_AVAIL packets can ship that
 // metadata to paired controllers without re-reading on every offer.
 static constexpr const char* CTRL_FW_PATH = "/controller.bin";
@@ -60,11 +60,11 @@ static void rescan_controller_firmware() {
     g_ctrl_fw_present = false;
     g_ctrl_fw_size    = 0;
     g_ctrl_fw_md5[0]  = '\0';
-    if (!SPIFFS.exists(CTRL_FW_PATH)) {
+    if (!LittleFS.exists(CTRL_FW_PATH)) {
         Serial.println("[ota] no controller.bin bundled");
         return;
     }
-    File f = SPIFFS.open(CTRL_FW_PATH, "r");
+    File f = LittleFS.open(CTRL_FW_PATH, "r");
     if (!f) return;
     g_ctrl_fw_size = f.size();
     MD5Builder md5;
@@ -171,13 +171,13 @@ static void handle_upload() {
 
 // --- Controller-binary upload handlers -----------------------------------
 // Separate route (/controller-update) writes the bundled controller .bin
-// into SPIFFS at /controller.bin. We do NOT call Update.* here — this
+// into LittleFS at /controller.bin. We do NOT call Update.* here — this
 // payload isn't our own firmware, it's the controller's. The actual
 // flash happens on the controller side once it WiFi-pulls /controller.bin.
 static File g_ctrl_upload_file;
 
 static void handle_controller_upload_post() {
-    if (!SPIFFS.exists(CTRL_FW_PATH)) {
+    if (!LittleFS.exists(CTRL_FW_PATH)) {
         server.send(500, "text/plain", "FAIL: no file written\n");
         return;
     }
@@ -194,8 +194,8 @@ static void handle_controller_upload() {
     if (upload.status == UPLOAD_FILE_START) {
         Serial.printf("[ota] controller upload start: %s\n",
                       upload.filename.c_str());
-        if (SPIFFS.exists(CTRL_FW_PATH)) SPIFFS.remove(CTRL_FW_PATH);
-        g_ctrl_upload_file = SPIFFS.open(CTRL_FW_PATH, "w");
+        if (LittleFS.exists(CTRL_FW_PATH)) LittleFS.remove(CTRL_FW_PATH);
+        g_ctrl_upload_file = LittleFS.open(CTRL_FW_PATH, "w");
         if (!g_ctrl_upload_file) {
             Serial.println("[ota] FAILED to open controller.bin for write");
         }
@@ -211,17 +211,17 @@ static void handle_controller_upload() {
         }
     } else if (upload.status == UPLOAD_FILE_ABORTED) {
         if (g_ctrl_upload_file) g_ctrl_upload_file.close();
-        SPIFFS.remove(CTRL_FW_PATH);
+        LittleFS.remove(CTRL_FW_PATH);
         Serial.println("[ota] controller upload aborted");
     }
 }
 
 static void handle_controller_get() {
-    if (!SPIFFS.exists(CTRL_FW_PATH)) {
+    if (!LittleFS.exists(CTRL_FW_PATH)) {
         server.send(404, "text/plain", "controller.bin not bundled\n");
         return;
     }
-    File f = SPIFFS.open(CTRL_FW_PATH, "r");
+    File f = LittleFS.open(CTRL_FW_PATH, "r");
     if (!f) {
         server.send(500, "text/plain", "open failed\n");
         return;
@@ -242,11 +242,11 @@ void begin() {
     Serial.printf("[ota] SoftAP up: SSID=%s  IP=%s\n", AP_SSID,
                   WiFi.softAPIP().toString().c_str());
 
-    // SPIFFS holds the bundled controller .bin so paired controllers can
+    // LittleFS holds the bundled controller .bin so paired controllers can
     // pull it over HTTP after a heartbeat-triggered MSG_FIRMWARE_AVAIL
     // offer. Format on first boot (or after a partition wipe).
-    if (!SPIFFS.begin(/*formatOnFail=*/true)) {
-        Serial.println("[ota] SPIFFS mount FAILED");
+    if (!LittleFS.begin(/*formatOnFail=*/true)) {
+        Serial.println("[ota] LittleFS mount FAILED");
     } else {
         rescan_controller_firmware();
     }
@@ -258,7 +258,7 @@ void begin() {
     // HTTP_ANY so `curl -I` (HEAD) and real GETs both land on the
     // streamer — HEAD just discards the body. Without this, debugging
     // "did the upload land?" via curl -I returned the default 404 and
-    // looked like a failure even though SPIFFS had the file.
+    // looked like a failure even though LittleFS had the file.
     server.on("/controller.bin", HTTP_ANY, handle_controller_get);
     // Tiny info endpoint for cheap sanity-checking from the host side:
     //   curl http://192.168.4.1/controller-info

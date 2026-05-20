@@ -7,7 +7,9 @@
 #
 # Flash budget on the T-Display-S3 (16 MB): bootloader/partition table
 # (~64 KB) + nvs (20 KB) + otadata (8 KB) + app0 (3 MB) + app1 (3 MB) +
-# remainder as SPIFFS for future use. NVS offset matches huge_app so
+# remainder as a LittleFS data partition for the bundled
+# controller.bin (kept as subtype "spiffs" — arduino-esp32's LittleFS
+# library uses the same partition tag). NVS offset matches huge_app so
 # existing match history / defaults survive the flash-layout change.
 #
 # Name,     Type, SubType, Offset,   Size,     Flags
