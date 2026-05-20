@@ -220,13 +220,39 @@ else
     exit 1
 fi
 
-# After /update the wall-box reboots. Give it ~15 s to come back, then
-# push the controller .bin into its SPIFFS at /controller.bin. Paired
-# controllers heartbeat their fw_build every 5 s; when they report an
-# older version than the wall-box's CONTROLLER_FW_BUILD_EXPECTED, the
-# wall-box unicasts MSG_FIRMWARE_AVAIL to nudge them.
+# After /update the wall-box reboots. The Mac's WiFi may roam back
+# to a preferred network during the ~5-10 s downtime; if it does, our
+# next curl to 192.168.4.1 hits whatever IS at .1 on the new network
+# (e.g. an nginx proxy returning 301). Force re-join + verify subnet
+# before proceeding.
 if [[ -f "$CONTROLLER_BIN" ]]; then
-    echo "[ota] Waiting for wall-box to come back online for controller upload..."
+    echo "[ota] Wall-box rebooting — re-joining $WALLBOX_SSID..."
+    sleep 5    # give the wall-box a head start to come back up
+
+    JOINED=0
+    for attempt in 1 2 3 4 5 6 7 8 9 10; do
+        if networksetup -setairportnetwork "$WIFI_IF" \
+                "$WALLBOX_SSID" "$WALLBOX_PASS" 2>&1 | grep -qi "could not"; then
+            sleep 3
+            continue
+        fi
+        for _ in $(seq 1 10); do
+            CURR_IP=$(ipconfig getifaddr "$WIFI_IF" 2>/dev/null || true)
+            if [[ "$CURR_IP" == 192.168.4.* ]]; then
+                JOINED=1
+                break 2
+            fi
+            sleep 1
+        done
+    done
+    if [[ "$JOINED" != "1" ]]; then
+        echo "[ota] ERROR: couldn't re-join wall-box AP after firmware reboot." >&2
+        echo "[ota]   Skipping controller-update upload." >&2
+        exit 1
+    fi
+    echo "[ota]   On wall-box AP. Local IP: $CURR_IP"
+
+    echo "[ota] Waiting for wall-box WebServer to accept connections..."
     for i in $(seq 1 30); do
         if curl -s --max-time 2 -o /dev/null "http://$WALLBOX_IP/" ; then
             echo "[ota]   wall-box up."
