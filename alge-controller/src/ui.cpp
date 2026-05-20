@@ -1492,17 +1492,20 @@ static void draw_settings() {
                                              COLOR_BG_DARK, COLOR_ERROR);
     }
 
-    // System info — single line below the factory button, comfortable
-    // gap before the back button. Drop the "Verlauf: N Match(es)" hint
-    // since "Match-Verlauf" button already implies it.
+    // System info — two compact lines under the factory button. The
+    // single-line layout overflowed at FreeSans9pt7b on a 320 px panel
+    // once the MAC was tacked on (Akku NN% + v1.0.0 + 17-char MAC ≈
+    // wider than the screen). Stack vertically in the 5×7 built-in
+    // font and the row stays inside the bezel with margin.
     d.setTextColor(COLOR_DIM, COLOR_BG_DARK);
-    d.setFont(&fonts::FreeSans9pt7b);
+    d.setFont(&fonts::Font0);
     d.setTextDatum(top_left);
-    char sys[80];
-    snprintf(sys, sizeof(sys), "Akku %d%%  v%s  MAC %s",
+    char top[40];
+    snprintf(top, sizeof(top), "Akku %d%%   v%s   FW build %u",
              M5.Power.getBatteryLevel(), FIRMWARE_VERSION,
-             WiFi.macAddress().c_str());
-    d.drawString(sys, 8, 186);
+             (unsigned)CONTROLLER_FW_BUILD);
+    d.drawString(top, 8, 184);
+    d.drawString(WiFi.macAddress().c_str(), 8, 196);
 
     g_set_btn_back = uih::draw_button(10, 206, DISPLAY_WIDTH - 20, 26,
                                       "< ZURÜCK", COLOR_PRIMARY, COLOR_TEXT);
