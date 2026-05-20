@@ -1396,6 +1396,17 @@ static void draw_ota_update() {
     auto& d = M5.Display;
     uih::draw_header("FIRMWARE-UPDATE");
 
+    // Version delta — "v<running> → v<offered>" — sits right under the
+    // header so the operator can sanity-check what's being installed
+    // before it commits, and verify after reboot that the new build is
+    // running by comparing against the splash build number.
+    char ver[24];
+    snprintf(ver, sizeof(ver), "v%u → v%u",
+             (unsigned)CONTROLLER_FW_BUILD,
+             (unsigned)client_ota::offer().build_code);
+    uih::centre_text(DISPLAY_WIDTH / 2, 30, ver, COLOR_DIM,
+                     &fonts::FreeSans9pt7b);
+
     const auto p     = client_ota::phase();
     const uint32_t r = client_ota::bytes_received();
     const uint32_t t = client_ota::bytes_total();
