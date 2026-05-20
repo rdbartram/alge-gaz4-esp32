@@ -117,8 +117,12 @@ void connection_watchdog() {
     if (espnow_server::paired_peer_count() == 0) return;
 
     // After 30 s of silence from every paired controller, mark the link
-    // as cold. Display can choose to show a banner. A fresh intent flips
-    // it back automatically because apply_intent() touches last_intent_ms.
+    // as cold. Controllers send a 5 s heartbeat once paired, so 30 s of
+    // nothing means six missed heartbeats — genuinely off / out of range
+    // rather than just an idle half. (Earlier 30 s threshold without a
+    // heartbeat used to fire mid-match and replace the score with FUNK
+    // VERLOREN.) A fresh intent flips it back because apply_intent()
+    // touches last_intent_ms.
     const bool cold = (now - snap.last_intent_ms > 30000);
     if (snap.wb_mode == wb_state::WB_MATCH_LIVE && cold) {
         wb_state::set_wb_mode(wb_state::WB_CONNECTION_LOST);

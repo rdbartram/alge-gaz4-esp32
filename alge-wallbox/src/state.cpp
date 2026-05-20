@@ -601,6 +601,36 @@ void tick(uint32_t dt_ms) {
         mark_dirty();
     }
 
+    // Idle-too-long watchdog: if the match has been paused / waiting for
+    // 60+ minutes, the operator has walked off without cleaning up. End
+    // the match (so it still lands in history) and let the existing
+    // ENDED auto-blank flow zero the board. Covers explicit PAUSE,
+    // halftime/ET-halftime breaks and parked pre-* countdowns alike.
+    static uint32_t s_idle_since_ms = 0;
+    constexpr uint32_t IDLE_LIMIT_MS = 60u * 60u * 1000u;
+    const MatchState ms = g_match.match_state;
+    const bool in_paused = (ms == STATE_PAUSED_H1 || ms == STATE_PAUSED_H2 ||
+                            ms == STATE_PAUSED_ET || ms == STATE_HALFTIME ||
+                            ms == STATE_ET_HALFTIME);
+    const bool in_pre    = (ms == STATE_PRE_MATCH || ms == STATE_PRE_EXTRA_TIME);
+    if (g_match.clock_running || (!in_paused && !in_pre)) {
+        s_idle_since_ms = 0;
+    } else {
+        const uint32_t now = millis();
+        if (s_idle_since_ms == 0) {
+            s_idle_since_ms = now;
+        } else if (now - s_idle_since_ms > IDLE_LIMIT_MS) {
+            s_idle_since_ms = 0;
+            if (in_paused) {
+                do_end_match();      // writes history, lands in STATE_ENDED
+            } else {
+                zero_match();        // PRE_* never produced a match worth logging
+                set_wb_mode(WB_BLANK_BURST);
+            }
+            mark_dirty();
+        }
+    }
+
     if (!g_match.clock_running) return;
     static uint32_t frac_ms = 0;
     frac_ms += dt_ms;

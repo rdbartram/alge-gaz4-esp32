@@ -102,6 +102,23 @@ void loop() {
             send_pairing_request();
         }
     }
+
+    // Heartbeat once paired: send a zero-payload INTENT_NONE every 5 s so
+    // the wallbox can distinguish "controller silent because nothing's
+    // happening in the match" from "controller actually went away".
+    // Without this, a quiet half (no scores, no clock edits) would trip
+    // the wallbox's connection-lost banner and replace the score with
+    // FUNK VERLOREN — even though everything is fine.
+    if (g_have_pair) {
+        const uint32_t now = millis();
+        static uint32_t s_last_hb_ms = 0;
+        if (now - s_last_hb_ms >= 5000) {
+            s_last_hb_ms = now;
+            IntentPayload it = {};
+            it.intent_type = INTENT_NONE;
+            send_intent(it);
+        }
+    }
 }
 
 bool is_paired()             { return g_have_pair; }
