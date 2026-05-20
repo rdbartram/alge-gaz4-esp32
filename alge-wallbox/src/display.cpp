@@ -11,6 +11,7 @@
 #include "state.h"
 #include "espnow_server.h"
 #include "crest.h"
+#include "ota.h"
 
 #include <Arduino.h>
 // M5GFX's umbrella header doesn't expose the individual Panel /
@@ -111,6 +112,7 @@ static void draw_screen_blank_burst();
 static void draw_screen_polarity_test();
 static void draw_screen_segment_exercise();
 static void draw_screen_connection_lost();
+static void draw_screen_ota_update();
 static void draw_screen_error();
 
 static void centre(int y, const char* text, uint16_t color,
@@ -187,6 +189,7 @@ static void draw_full() {
     case wb_state::WB_POLARITY_TEST:     draw_screen_polarity_test();         break;
     case wb_state::WB_SEGMENT_EXERCISE:  draw_screen_segment_exercise();      break;
     case wb_state::WB_CONNECTION_LOST:   draw_screen_connection_lost();       break;
+    case wb_state::WB_OTA_UPDATE:        draw_screen_ota_update();            break;
     case wb_state::WB_ERROR:             draw_screen_error();                 break;
     }
 
@@ -402,6 +405,45 @@ static void draw_screen_connection_lost() {
     centre(150, "Kein Pult",   COLOR_TEXT,    &fonts::efontJA_14);
     centre(168, "hat sich",    COLOR_TEXT,    &fonts::efontJA_14);
     centre(186, "gemeldet",    COLOR_TEXT,    &fonts::efontJA_14);
+}
+
+static void draw_screen_ota_update() {
+    centre(80,  "OTA",         COLOR_ACCENT, &fonts::efontJA_24);
+    centre(110, "Update",      COLOR_TEXT,   &fonts::efontJA_16);
+
+    // Progress bar — 130 px wide, centred. We don't always know the
+    // upload's final size (multipart upload without a Content-Length
+    // hint), so when bytes_total is 0 we draw a "barber pole" bar that
+    // animates off the modulo of bytes_received.
+    const int bar_w = 130;
+    const int bar_h = 14;
+    const int bar_x = (DISPLAY_WIDTH - bar_w) / 2;
+    const int bar_y = 150;
+    sprite.drawRect(bar_x, bar_y, bar_w, bar_h, COLOR_TEXT);
+
+    const uint32_t recv  = wb_ota::bytes_received();
+    const uint32_t total = wb_ota::bytes_total();
+    if (total > 0) {
+        const uint32_t fill_w = (uint64_t)(bar_w - 2) * recv / total;
+        sprite.fillRect(bar_x + 1, bar_y + 1, (int)fill_w, bar_h - 2, COLOR_SUCCESS);
+        char pct[8];
+        snprintf(pct, sizeof(pct), "%u %%", (unsigned)((uint64_t)recv * 100 / total));
+        centre(180, pct, COLOR_TEXT, &fonts::efontJA_16);
+    } else {
+        // Indeterminate: scrolling segment based on recv modulo bar width.
+        const int seg_w = 30;
+        const int pos   = (recv / 1024) % (bar_w + seg_w) - seg_w;
+        const int x0    = bar_x + 1 + (pos < 0 ? 0 : pos);
+        const int draw_w = (pos < 0 ? seg_w + pos : (pos + seg_w > bar_w - 2 ? (bar_w - 2 - pos) : seg_w));
+        if (draw_w > 0) {
+            sprite.fillRect(x0, bar_y + 1, draw_w, bar_h - 2, COLOR_SUCCESS);
+        }
+        char kb[16];
+        snprintf(kb, sizeof(kb), "%u KB", (unsigned)(recv / 1024));
+        centre(180, kb, COLOR_TEXT, &fonts::efontJA_16);
+    }
+
+    centre(220, "Bitte warten", COLOR_DIM, &fonts::efontJA_14);
 }
 
 static void draw_screen_error() {

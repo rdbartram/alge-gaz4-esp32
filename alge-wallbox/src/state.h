@@ -35,6 +35,7 @@ enum WallboxMode : uint8_t {
     WB_POLARITY_TEST,
     WB_SEGMENT_EXERCISE,
     WB_CONNECTION_LOST,
+    WB_OTA_UPDATE,
     WB_ERROR,
 };
 

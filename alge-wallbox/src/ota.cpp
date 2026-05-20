@@ -15,6 +15,8 @@
 #include "ota.h"
 #include "config.h"
 #include "credentials.h"
+#include "state.h"
+#include "display.h"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -30,6 +32,18 @@ static constexpr const char* HOSTNAME     = OTA_HOSTNAME;
 static constexpr const char* OTA_PW       = OTA_PASSWORD;
 
 static WebServer server(80);
+
+// Progress signalling for the LCD. Volatile because handle_upload is
+// driven from WebServer.handleClient() and the display reads these on
+// the same core but between callbacks — keeps the compiler from caching
+// either pointer across the chunk loop.
+static volatile bool     g_in_progress    = false;
+static volatile uint32_t g_bytes_received = 0;
+static volatile uint32_t g_bytes_total    = 0;
+
+bool     in_progress()    { return g_in_progress; }
+uint32_t bytes_received() { return g_bytes_received; }
+uint32_t bytes_total()    { return g_bytes_total; }
 
 static void handle_root() {
     // Minimal landing page so a stray browser visit to 192.168.4.1
@@ -66,6 +80,15 @@ static void handle_upload() {
     HTTPUpload& upload = server.upload();
     if (upload.status == UPLOAD_FILE_START) {
         Serial.printf("[ota] upload start: %s\n", upload.filename.c_str());
+        g_in_progress    = true;
+        g_bytes_received = 0;
+        // Without a Content-Length header per multipart field we don't
+        // get a precise total upfront. Falls back to UPDATE_SIZE_UNKNOWN
+        // (we set 0 so the display renders an indeterminate bar). The
+        // host-side script bakes the file size into a hint we *could*
+        // pass as a header — left for later if it matters.
+        g_bytes_total    = 0;
+        wb_state::set_wb_mode(wb_state::WB_OTA_UPDATE);
         // U_FLASH = main app partition. UPDATE_SIZE_UNKNOWN lets Update
         // accept any size up to the partition limit (huge_app = ~3 MB).
         if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
@@ -75,6 +98,10 @@ static void handle_upload() {
         if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
             Update.printError(Serial);
         }
+        g_bytes_received += upload.currentSize;
+        // Refresh the LCD between chunks so the user sees a moving
+        // progress bar rather than a frozen "UPDATE…" screen.
+        wb_display::tick();
     } else if (upload.status == UPLOAD_FILE_END) {
         if (Update.end(true)) {
             Serial.printf("[ota] upload complete: %u bytes\n",
@@ -82,8 +109,11 @@ static void handle_upload() {
         } else {
             Update.printError(Serial);
         }
+        g_bytes_total = g_bytes_received;
+        wb_display::tick();
     } else if (upload.status == UPLOAD_FILE_ABORTED) {
         Update.abort();
+        g_in_progress = false;
         Serial.println("[ota] upload aborted by client");
     }
 }

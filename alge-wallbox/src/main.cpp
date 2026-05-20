@@ -74,6 +74,10 @@ void gaz4_tx_scheduler() {
     // and current score. Maintenance modes (POLARITY_TEST / SEGMENT_
     // EXERCISE / BLANK_BURST) have their own transmitters in
     // maintenance.cpp, so they're skipped here.
+    // Skip GAZ4 entirely during an OTA upload — the blocking burst
+    // transmits would steal CPU from WebServer.handleClient() and stretch
+    // the flash session by 5-10×. Resume on next iteration once the
+    // wallbox finishes / reboots.
     const bool match_active =
         (snap.match_state != STATE_IDLE && snap.match_state != STATE_SETUP);
     const bool ui_mode_ok =
