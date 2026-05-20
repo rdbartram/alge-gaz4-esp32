@@ -3,18 +3,21 @@
 #  ota_flash_wallbox.sh
 #
 #  One-shot wireless reflash of the wall-box on a Mac:
-#    1. remember the WiFi network you're currently joined to
-#    2. join the wall-box's "FC-Waengi-Wallbox" SoftAP
-#    3. wait for the wall-box to be pingable
-#    4. pio run -e lilygo-t-display-s3-ota -t upload
-#    5. bounce WiFi so macOS auto-rejoins your normal SSID from its
-#       preferred-networks list (keychain holds the password)
+#    1. build the firmware (while you still have internet)
+#    2. remember the WiFi network you're currently joined to
+#    3. join the wall-box's "FC-Waengi-Wallbox" SoftAP
+#    4. wait for the wall-box to be pingable
+#    5. invoke espota.py directly with the prebuilt .bin (bypasses
+#       PlatformIO so its Python-deps update check doesn't choke on
+#       the no-internet AP)
+#    6. bounce WiFi so macOS auto-rejoins the original SSID
 #
 #  Usage:
 #    tools/ota_flash_wallbox.sh
 #
-#  Override the WiFi interface if your Mac uses something other than en0:
-#    WIFI_IF=en1 tools/ota_flash_wallbox.sh
+#  Overrides:
+#    WIFI_IF=en1 …              if your Mac's WiFi isn't en0
+#    SKIP_BUILD=1 …             reuse the existing .pio build (no recompile)
 # ============================================================================
 
 set -euo pipefail
@@ -22,12 +25,17 @@ set -euo pipefail
 WALLBOX_SSID="${WALLBOX_SSID:-FC-Waengi-Wallbox}"
 WALLBOX_PASS="${WALLBOX_PASS:-1967NeverGiveUp}"
 WALLBOX_IP="${WALLBOX_IP:-192.168.4.1}"
+WALLBOX_OTA_PORT="${WALLBOX_OTA_PORT:-3232}"
+WALLBOX_OTA_AUTH="${WALLBOX_OTA_AUTH:-1967}"
 WIFI_IF="${WIFI_IF:-en0}"
 PIO_ENV="${PIO_ENV:-lilygo-t-display-s3-ota}"
+SKIP_BUILD="${SKIP_BUILD:-0}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 WALLBOX_DIR="$REPO_ROOT/alge-wallbox"
+FIRMWARE_BIN="$WALLBOX_DIR/.pio/build/$PIO_ENV/firmware.bin"
+ESPOTA="$HOME/.platformio/packages/framework-arduinoespressif32/tools/espota.py"
 
 if [[ ! -f "$WALLBOX_DIR/platformio.ini" ]]; then
     echo "[ota] ERROR: no platformio.ini at $WALLBOX_DIR" >&2
@@ -42,6 +50,26 @@ if ! command -v networksetup >/dev/null 2>&1; then
     exit 1
 fi
 
+# Step 1 — build the firmware while we still have internet. PlatformIO's
+# pre-build phase pings GitHub/registries for dependency / toolchain
+# updates; once we jump to the wall-box AP that check times out and the
+# upload never starts.
+if [[ "$SKIP_BUILD" != "1" ]]; then
+    echo "[ota] Building firmware (env: $PIO_ENV)..."
+    (cd "$WALLBOX_DIR" && pio run -e "$PIO_ENV")
+fi
+
+if [[ ! -f "$FIRMWARE_BIN" ]]; then
+    echo "[ota] ERROR: built firmware not found at $FIRMWARE_BIN" >&2
+    exit 1
+fi
+if [[ ! -f "$ESPOTA" ]]; then
+    echo "[ota] ERROR: espota.py not found at $ESPOTA" >&2
+    echo "[ota] Run a wired 'pio run -t upload' once so PlatformIO installs"  >&2
+    echo "[ota] the arduino-espressif32 toolchain, then re-run this script." >&2
+    exit 1
+fi
+
 PREV_SSID=""
 
 restore_wifi() {
@@ -49,12 +77,9 @@ restore_wifi() {
     if [[ -n "$PREV_SSID" && "$PREV_SSID" != "$WALLBOX_SSID" ]]; then
         echo
         echo "[ota] Restoring WiFi (was: $PREV_SSID)..."
-        # Toggling power off+on is the most reliable way to get macOS to
-        # re-evaluate its preferred-networks list — passing the SSID
-        # directly via networksetup -setairportnetwork would require us to
-        # also know the password, which lives in the Keychain. Bouncing
-        # the radio lets macOS rejoin the highest-priority known network
-        # without us touching credentials.
+        # Bouncing the radio is the most reliable way to make macOS
+        # rejoin from its preferred-networks list without us needing the
+        # original SSID's password (which lives in the Keychain).
         networksetup -setairportpower "$WIFI_IF" off || true
         sleep 1
         networksetup -setairportpower "$WIFI_IF" on  || true
@@ -88,13 +113,18 @@ if [[ "$PREV_SSID" != "$WALLBOX_SSID" ]]; then
         if [[ $i == 30 ]]; then
             echo
             echo "[ota] ERROR: $WALLBOX_IP didn't respond after 30 s." >&2
-            echo "[ota] Is the wall-box powered on and within range?" >&2
+            echo "[ota] Is the wall-box powered on and within range?"  >&2
             exit 1
         fi
     done
 fi
 
-echo "[ota] Running OTA upload..."
-cd "$WALLBOX_DIR"
-pio run -e "$PIO_ENV" -t upload
-echo "[ota] Upload complete."
+echo "[ota] Uploading $FIRMWARE_BIN to $WALLBOX_IP:$WALLBOX_OTA_PORT ..."
+python3 "$ESPOTA" \
+    --debug \
+    --progress \
+    --ip="$WALLBOX_IP" \
+    --port="$WALLBOX_OTA_PORT" \
+    --auth="$WALLBOX_OTA_AUTH" \
+    --file="$FIRMWARE_BIN"
+echo "[ota] Upload complete — wall-box rebooting into new firmware."
