@@ -431,6 +431,12 @@ static void draw_splash() {
                      COLOR_TEXT, &fonts::efontJA_16);
     uih::centre_text(cx, below_crest + 32, "v" FIRMWARE_VERSION " . seit 1967",
                      COLOR_DIM, &fonts::FreeSans9pt7b);
+    // Build code on its own line so OTA test cycles are obvious: cable-
+    // flashed build N, OTA bumps to N+1, splash shows N+1.
+    char b[16];
+    snprintf(b, sizeof(b), "Build %u", (unsigned)CONTROLLER_FW_BUILD);
+    uih::centre_text(cx, below_crest + 50, b, COLOR_ACCENT,
+                     &fonts::FreeSans9pt7b);
 
     // progress bar
     const int barx = 40, bary = 222, barw = 240, barh = 8;
