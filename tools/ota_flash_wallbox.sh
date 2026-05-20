@@ -50,6 +50,32 @@ if ! command -v networksetup >/dev/null 2>&1; then
     exit 1
 fi
 
+# Application Firewall sanity check. The OTA flow needs the wall-box to
+# open an inbound TCP connection back to python3 on the Mac. If the AF
+# is enabled and python3 isn't allow-listed, that connection is silently
+# dropped and espota.py reports "No response from device". We don't
+# touch the firewall automatically (that needs sudo + an opinion), but
+# we *do* warn so the user knows where to look.
+PFW="/usr/libexec/ApplicationFirewall/socketfilterfw"
+if [[ -x "$PFW" ]]; then
+    FW_STATE=$("$PFW" --getglobalstate 2>/dev/null || true)
+    if [[ "$FW_STATE" == *"enabled"* || "$FW_STATE" == *"State = 1"* || "$FW_STATE" == *"State = 2"* ]]; then
+        PY_PATH=$(command -v python3 || true)
+        cat >&2 <<EOF
+[ota] WARNING: macOS Application Firewall is ON.
+[ota]   $FW_STATE
+[ota] If the upload fails with "No response from device", the wall-box's
+[ota] inbound TCP connection to python3 is being dropped. Either:
+[ota]   1) Disable temporarily:   System Settings → Network → Firewall
+[ota]   2) Or allow python3 once:
+[ota]      sudo "$PFW" --add "$PY_PATH"
+[ota]      sudo "$PFW" --unblockapp "$PY_PATH"
+[ota] Continuing — if the first run is slow, the OS may also be popping
+[ota] a "Allow incoming connections?" dialog; accept it.
+EOF
+    fi
+fi
+
 # Step 1 — build the firmware while we still have internet. PlatformIO's
 # pre-build phase pings GitHub/registries for dependency / toolchain
 # updates; once we jump to the wall-box AP that check times out and the
