@@ -25,17 +25,16 @@ set -euo pipefail
 WALLBOX_SSID="${WALLBOX_SSID:-FC-Waengi-Wallbox}"
 WALLBOX_PASS="${WALLBOX_PASS:-1967NeverGiveUp}"
 WALLBOX_IP="${WALLBOX_IP:-192.168.4.1}"
-WALLBOX_OTA_PORT="${WALLBOX_OTA_PORT:-3232}"
+WALLBOX_OTA_USER="${WALLBOX_OTA_USER:-ota}"
 WALLBOX_OTA_AUTH="${WALLBOX_OTA_AUTH:-1967}"
 WIFI_IF="${WIFI_IF:-en0}"
-PIO_ENV="${PIO_ENV:-lilygo-t-display-s3-ota}"
+PIO_ENV="${PIO_ENV:-lilygo-t-display-s3}"
 SKIP_BUILD="${SKIP_BUILD:-0}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 WALLBOX_DIR="$REPO_ROOT/alge-wallbox"
 FIRMWARE_BIN="$WALLBOX_DIR/.pio/build/$PIO_ENV/firmware.bin"
-ESPOTA="$HOME/.platformio/packages/framework-arduinoespressif32/tools/espota.py"
 
 if [[ ! -f "$WALLBOX_DIR/platformio.ini" ]]; then
     echo "[ota] ERROR: no platformio.ini at $WALLBOX_DIR" >&2
@@ -50,31 +49,10 @@ if ! command -v networksetup >/dev/null 2>&1; then
     exit 1
 fi
 
-# Application Firewall sanity check. The OTA flow needs the wall-box to
-# open an inbound TCP connection back to python3 on the Mac. If the AF
-# is enabled and python3 isn't allow-listed, that connection is silently
-# dropped and espota.py reports "No response from device". We don't
-# touch the firewall automatically (that needs sudo + an opinion), but
-# we *do* warn so the user knows where to look.
-PFW="/usr/libexec/ApplicationFirewall/socketfilterfw"
-if [[ -x "$PFW" ]]; then
-    FW_STATE=$("$PFW" --getglobalstate 2>/dev/null || true)
-    if [[ "$FW_STATE" == *"enabled"* || "$FW_STATE" == *"State = 1"* || "$FW_STATE" == *"State = 2"* ]]; then
-        PY_PATH=$(command -v python3 || true)
-        cat >&2 <<EOF
-[ota] WARNING: macOS Application Firewall is ON.
-[ota]   $FW_STATE
-[ota] If the upload fails with "No response from device", the wall-box's
-[ota] inbound TCP connection to python3 is being dropped. Either:
-[ota]   1) Disable temporarily:   System Settings → Network → Firewall
-[ota]   2) Or allow python3 once:
-[ota]      sudo "$PFW" --add "$PY_PATH"
-[ota]      sudo "$PFW" --unblockapp "$PY_PATH"
-[ota] Continuing — if the first run is slow, the OS may also be popping
-[ota] a "Allow incoming connections?" dialog; accept it.
-EOF
-    fi
-fi
+# HTTP-push OTA (host → device only) means we don't need the
+# Application Firewall to accept any incoming connections — curl just
+# opens an outbound TCP to the wall-box on port 80. Skipping the
+# firewall check entirely.
 
 # Step 1 — build the firmware while we still have internet. PlatformIO's
 # pre-build phase pings GitHub/registries for dependency / toolchain
@@ -89,10 +67,8 @@ if [[ ! -f "$FIRMWARE_BIN" ]]; then
     echo "[ota] ERROR: built firmware not found at $FIRMWARE_BIN" >&2
     exit 1
 fi
-if [[ ! -f "$ESPOTA" ]]; then
-    echo "[ota] ERROR: espota.py not found at $ESPOTA" >&2
-    echo "[ota] Run a wired 'pio run -t upload' once so PlatformIO installs"  >&2
-    echo "[ota] the arduino-espressif32 toolchain, then re-run this script." >&2
+if ! command -v curl >/dev/null 2>&1; then
+    echo "[ota] ERROR: curl not found — install it via Homebrew (already on macOS by default)" >&2
     exit 1
 fi
 
@@ -202,39 +178,23 @@ EOF
     done
 fi
 
-# The host_ip espota.py auto-detects is whichever interface socket()
-# resolves first — frequently the wired Ethernet or a VPN, NOT the WiFi
-# we just joined. The wall-box would then try to dial back to an IP it
-# can't reach, hang, and time out with "No response from device".
-# Read the actual WiFi IP and pass it explicitly.
-HOST_IP=$(ipconfig getifaddr "$WIFI_IF" 2>/dev/null || true)
-if [[ -z "$HOST_IP" ]]; then
-    echo "[ota] ERROR: couldn't read $WIFI_IF IP — is the AP join still up?" >&2
+echo "[ota] Uploading $FIRMWARE_BIN to http://$WALLBOX_IP/update ..."
+# --fail makes curl exit non-zero on HTTP >=400 so we don't claim success
+# when the wall-box rejects the upload. --max-time 60s caps a hung box.
+# The form name "firmware" matches WebServer's HTTPUpload conventions —
+# the wallbox-side handle_upload() doesn't care about the field name,
+# but tagging it consistently helps if you ever post manually.
+http_status=$(curl --fail --max-time 60 \
+    --user "$WALLBOX_OTA_USER:$WALLBOX_OTA_AUTH" \
+    --progress-bar \
+    --form "firmware=@$FIRMWARE_BIN" \
+    --write-out '%{http_code}\n' \
+    --output /dev/null \
+    "http://$WALLBOX_IP/update" || echo "curl-failed")
+
+if [[ "$http_status" == "200" ]]; then
+    echo "[ota] Upload complete — wall-box rebooting into new firmware."
+else
+    echo "[ota] ERROR: upload failed (status: $http_status)" >&2
     exit 1
 fi
-echo "[ota] Host IP on $WIFI_IF: $HOST_IP"
-
-# Prefer the macOS system Python at /usr/bin/python3 — Apple ships it
-# signed by them and the Application Firewall trusts it by default
-# ("Allow incoming connections" is pre-installed). Homebrew's python3
-# isn't on that allowlist, so under a corporate MDM that locks the
-# firewall on, espota.py's inbound TCP back-channel from the wall-box
-# is silently dropped. The espota script itself has no Homebrew deps,
-# so /usr/bin/python3 runs it fine.
-PYTHON_BIN="${PYTHON_BIN:-/usr/bin/python3}"
-if [[ ! -x "$PYTHON_BIN" ]]; then
-    PYTHON_BIN="$(command -v python3)"
-    echo "[ota] WARNING: $PYTHON_BIN may not be firewall-allowed."
-fi
-echo "[ota] Python: $PYTHON_BIN"
-
-echo "[ota] Uploading $FIRMWARE_BIN to $WALLBOX_IP:$WALLBOX_OTA_PORT ..."
-"$PYTHON_BIN" "$ESPOTA" \
-    --debug \
-    --progress \
-    --ip="$WALLBOX_IP" \
-    --host_ip="$HOST_IP" \
-    --port="$WALLBOX_OTA_PORT" \
-    --auth="$WALLBOX_OTA_AUTH" \
-    --file="$FIRMWARE_BIN"
-echo "[ota] Upload complete — wall-box rebooting into new firmware."
