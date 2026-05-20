@@ -261,12 +261,15 @@ void tick() {
             }
         }
     }
-    // OTA update — step the download state machine and force a redraw
-    // each pass so the progress bar moves. step() is non-blocking and
-    // does at most one ~1 KB chunk per call, so the LCD repaints fast.
+    // OTA update — step the download state machine and ask for a
+    // partial redraw of just the progress band (not the whole screen).
+    // The earlier "g_invalidate = true every tick" approach repainted
+    // the entire 320×240 frame at hundreds of Hz, producing a strobe.
+    // Throttle to ~10 Hz and route through the tick-redraw path that
+    // already exists for the match/halftime clock screens.
     if (g_screen == SCREEN_OTA_UPDATE) {
         client_ota::step();
-        g_invalidate = true;   // redraw every tick so the bar advances
+        if (now - g_last_rendered_ms > 100) g_tick_redraw = true;
     }
 
     // Per-second clock tick triggers a partial redraw (clock + state
@@ -364,10 +367,12 @@ static void draw() {
 // the whole display — eliminates the visible whole-screen flash.
 static void draw_match_tick();
 static void draw_halftime_tick();
+static void draw_ota_update_tick();
 static void draw_tick() {
     switch (g_screen) {
     case SCREEN_MATCH:    draw_match_tick();    break;
     case SCREEN_HALFTIME: draw_halftime_tick(); break;
+    case SCREEN_OTA_UPDATE: draw_ota_update_tick(); break;
     default: break;
     }
 }
@@ -1455,6 +1460,75 @@ static void handle_ota_update_touch(int16_t x, int16_t y) {
     if (client_ota::phase() == client_ota::PHASE_ERROR &&
         uih::point_in(g_ota_btn_back, x, y)) {
         go(SCREEN_SETTINGS);
+    }
+}
+
+// Partial redraw — only the progress band (phase label + bar + counter)
+// gets re-painted, the header / static caption stay put. No fillScreen,
+// no flicker. Called from draw_tick() at ~10 Hz while on SCREEN_OTA_UPDATE.
+static void draw_ota_update_tick() {
+    auto& d = M5.Display;
+
+    const auto p     = client_ota::phase();
+    const uint32_t r = client_ota::bytes_received();
+    const uint32_t t = client_ota::bytes_total();
+
+    // Phase label band (y=40..72). Clear + redraw.
+    d.fillRect(0, 40, DISPLAY_WIDTH, 32, COLOR_BG_DARK);
+    const char* phase_line = "";
+    uint16_t    phase_color = COLOR_TEXT;
+    switch (p) {
+    case client_ota::PHASE_IDLE:
+        phase_line  = "Bereit"; phase_color = COLOR_DIM; break;
+    case client_ota::PHASE_JOIN_AP:
+        phase_line  = "Verbinde mit Wallbox-AP…"; phase_color = COLOR_ACCENT; break;
+    case client_ota::PHASE_DOWNLOAD:
+        phase_line  = "Lade Firmware…";           phase_color = COLOR_ACCENT; break;
+    case client_ota::PHASE_REBOOT:
+        phase_line  = "Neustart…";                phase_color = COLOR_SUCCESS; break;
+    case client_ota::PHASE_ERROR:
+        phase_line  = "Fehler";                   phase_color = COLOR_ERROR; break;
+    }
+    uih::centre_text(DISPLAY_WIDTH / 2, 50, phase_line, phase_color,
+                     &fonts::efontJA_16);
+
+    // Bar band (y=85..120). Clear + redraw with current fill width.
+    const int bw = 240, bh = 22;
+    const int bx = (DISPLAY_WIDTH - bw) / 2;
+    const int by = 90;
+    d.fillRect(0, 85, DISPLAY_WIDTH, 35, COLOR_BG_DARK);
+    d.drawRoundRect(bx, by, bw, bh, 4, COLOR_TEXT);
+    if (t > 0 && (p == client_ota::PHASE_DOWNLOAD || p == client_ota::PHASE_REBOOT)) {
+        const int fill_w = (int)((uint64_t)(bw - 4) * r / t);
+        d.fillRoundRect(bx + 2, by + 2, fill_w, bh - 4, 3, COLOR_SUCCESS);
+    } else if (p == client_ota::PHASE_JOIN_AP) {
+        static int slide = 0;
+        slide = (slide + 6) % (bw + 30);
+        const int seg_w = 40;
+        const int x0    = bx + 2 + (slide < seg_w ? 0 : slide - seg_w);
+        const int x1    = bx + 2 + (slide > bw - 4 ? bw - 4 : slide);
+        if (x1 > x0) {
+            d.fillRoundRect(x0, by + 2, x1 - x0, bh - 4, 3, COLOR_ACCENT);
+        }
+    }
+
+    // Counter band (y=120..172). Clear + redraw.
+    d.fillRect(0, 120, DISPLAY_WIDTH, 52, COLOR_BG_DARK);
+    if (t > 0 && (p == client_ota::PHASE_DOWNLOAD || p == client_ota::PHASE_REBOOT)) {
+        char pct[8];
+        snprintf(pct, sizeof(pct), "%u %%",
+                 (unsigned)((uint64_t)r * 100 / t));
+        uih::centre_text(DISPLAY_WIDTH / 2, 124, pct, COLOR_TEXT,
+                         &fonts::FreeSansBold18pt7b);
+        char bytes[40];
+        snprintf(bytes, sizeof(bytes), "%u / %u KB",
+                 (unsigned)(r / 1024), (unsigned)(t / 1024));
+        uih::centre_text(DISPLAY_WIDTH / 2, 154, bytes, COLOR_DIM,
+                         &fonts::efontJA_14);
+    } else if (p == client_ota::PHASE_ERROR) {
+        uih::centre_text(DISPLAY_WIDTH / 2, 130,
+                         client_ota::error_message(), COLOR_WARN,
+                         &fonts::efontJA_14);
     }
 }
 

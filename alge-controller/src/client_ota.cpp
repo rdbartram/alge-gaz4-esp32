@@ -72,8 +72,13 @@ void perform_update() {
     g_err_msg[0]  = '\0';
     g_phase_t0    = millis();
 
-    Serial.printf("[ota] joining %s...\n", WIFI_AP_SSID);
-    WiFi.begin(WIFI_AP_SSID, WIFI_AP_PASSWORD);
+    // WALLBOX_AP_SSID — explicitly the wall-box's SoftAP, not the
+    // controller's own AP. Earlier this used WIFI_AP_SSID which
+    // resolved to the controller's own AP name ("FC-Waengi-Tafel"),
+    // a network that never existed for the controller to join — every
+    // OTA attempt timed out at the 15 s mark.
+    Serial.printf("[ota] joining %s...\n", WALLBOX_AP_SSID);
+    WiFi.begin(WALLBOX_AP_SSID, WALLBOX_AP_PASSWORD);
 }
 
 void step() {

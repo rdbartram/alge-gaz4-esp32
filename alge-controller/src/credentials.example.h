@@ -14,6 +14,12 @@
 #define WIFI_AP_SSID      "FC-Waengi-Tafel"
 #define WIFI_AP_PASSWORD  "CHANGE-ME-LONG-PASSPHRASE"
 
+// The wall-box's SoftAP — used when the controller fetches the bundled
+// firmware over HTTP during an OTA update. Must match the wall-box's
+// WIFI_AP_SSID / WIFI_AP_PASSWORD exactly.
+#define WALLBOX_AP_SSID      "FC-Waengi-Wallbox"
+#define WALLBOX_AP_PASSWORD  "CHANGE-ME-LONG-PASSPHRASE"
+
 // ArduinoOTA upload password. Required for `pio run -t upload --upload-port ...`.
 #define OTA_PASSWORD      "CHANGE-ME-OTA-SECRET"
 
