@@ -52,6 +52,7 @@ static int8_t   g_last_rx_rssi      = -127;
 static void on_recv(const esp_now_recv_info_t* info, const uint8_t* data, int len);
 static void handle_intent (const ScoreboardMessage& m, const uint8_t* from);
 static void handle_pairing(const ScoreboardMessage& m, const uint8_t* from);
+static void maybe_offer_firmware(Peer& peer, const uint8_t* from, bool force);
 
 static bool register_peer(const uint8_t* mac);
 static void load_peer_table();
@@ -283,33 +284,6 @@ static void handle_intent(const ScoreboardMessage& msg, const uint8_t* from) {
     // can decide whether to nudge it for OTA.
     if (msg.body.intent.fw_build != 0) {
         peer.fw_build = msg.body.intent.fw_build;
-        // Stale + we have a binary to offer + throttle expired → nudge.
-        const uint32_t now = millis();
-        if (peer.fw_build < CONTROLLER_FW_BUILD_EXPECTED &&
-            wb_ota::has_controller_firmware() &&
-            (peer.last_fw_offer_ms == 0 ||
-             now - peer.last_fw_offer_ms >= FW_OFFER_THROTTLE_MS)) {
-            peer.last_fw_offer_ms = now;
-            ScoreboardMessage out = {};
-            out.magic    = MSG_MAGIC;
-            out.version  = MSG_PROTO_VERSION;
-            out.msg_type = MSG_FIRMWARE_AVAIL;
-            out.sequence = ++g_tx_seq;
-            out.body.fw_avail.build_code = CONTROLLER_FW_BUILD_EXPECTED;
-            out.body.fw_avail.size_bytes = wb_ota::controller_firmware_size();
-            strncpy(out.body.fw_avail.md5_hex,
-                    wb_ota::controller_firmware_md5(),
-                    sizeof(out.body.fw_avail.md5_hex) - 1);
-            strncpy(out.body.fw_avail.fetch_path, "/controller.bin",
-                    sizeof(out.body.fw_avail.fetch_path) - 1);
-            scoreboard_msg_sign(&out);
-            esp_now_send(from, (const uint8_t*)&out, sizeof(out));
-            Serial.printf("[espnow] FW nudge -> %02X:%02X:%02X:%02X:%02X:%02X "
-                          "(v%u, was v%u)\n",
-                          from[0], from[1], from[2], from[3], from[4], from[5],
-                          (unsigned)CONTROLLER_FW_BUILD_EXPECTED,
-                          (unsigned)peer.fw_build);
-        }
     }
 
     wb_state::note_intent_received();
@@ -337,6 +311,50 @@ static void handle_intent(const ScoreboardMessage& msg, const uint8_t* from) {
     if (msg.body.intent.intent_type == INTENT_REQUEST_HISTORY) {
         send_history_to(from);
     }
+
+    // After every intent: re-evaluate whether this peer should get a
+    // firmware nudge. Heartbeats hit the throttle (~one offer per 30 s
+    // per peer); INTENT_REQUEST_FULL forces an immediate offer (the
+    // controller deliberately asked for a fresh state, so the operator
+    // expects to see "Update verfügbar" within a second of entering
+    // Settings, not 30 s later).
+    const bool force = (msg.body.intent.intent_type == INTENT_REQUEST_FULL);
+    maybe_offer_firmware(peer, from, force);
+}
+
+static void maybe_offer_firmware(Peer& peer, const uint8_t* from, bool force) {
+    if (peer.fw_build == 0) return;                    // never heard from this peer
+    if (!wb_ota::has_controller_firmware()) return;    // no binary bundled
+    if (peer.fw_build == CONTROLLER_FW_BUILD_EXPECTED) return;
+
+    // Comparison is != rather than < so an asymmetric bump (or a
+    // downgrade) on either side still produces a nudge — testing is
+    // less fragile and emergency downgrades are possible.
+    const uint32_t now = millis();
+    if (!force && peer.last_fw_offer_ms != 0 &&
+        now - peer.last_fw_offer_ms < FW_OFFER_THROTTLE_MS) {
+        return;
+    }
+    peer.last_fw_offer_ms = now;
+
+    ScoreboardMessage out = {};
+    out.magic    = MSG_MAGIC;
+    out.version  = MSG_PROTO_VERSION;
+    out.msg_type = MSG_FIRMWARE_AVAIL;
+    out.sequence = ++g_tx_seq;
+    out.body.fw_avail.build_code = CONTROLLER_FW_BUILD_EXPECTED;
+    out.body.fw_avail.size_bytes = wb_ota::controller_firmware_size();
+    strncpy(out.body.fw_avail.md5_hex, wb_ota::controller_firmware_md5(),
+            sizeof(out.body.fw_avail.md5_hex) - 1);
+    strncpy(out.body.fw_avail.fetch_path, "/controller.bin",
+            sizeof(out.body.fw_avail.fetch_path) - 1);
+    scoreboard_msg_sign(&out);
+    esp_now_send(from, (const uint8_t*)&out, sizeof(out));
+    Serial.printf("[espnow] FW nudge -> %02X:%02X:%02X:%02X:%02X:%02X "
+                  "(offer v%u, peer at v%u, force=%d)\n",
+                  from[0], from[1], from[2], from[3], from[4], from[5],
+                  (unsigned)CONTROLLER_FW_BUILD_EXPECTED,
+                  (unsigned)peer.fw_build, (int)force);
 }
 
 static void handle_pairing(const ScoreboardMessage& msg, const uint8_t* from) {

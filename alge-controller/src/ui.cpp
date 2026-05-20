@@ -821,6 +821,13 @@ static void handle_match_touch(int16_t x, int16_t y) {
         }
     } else if (uih::point_in(g_match_btn_settings, x, y)) {
         g_screen_return = SCREEN_MATCH;
+        // Force-refresh on entry — the wallbox treats this as an
+        // explicit "tell me everything you know" and (re-)evaluates
+        // whether to send a firmware-available offer. Without this,
+        // the only times the offer fires are heartbeats throttled to
+        // one per 30 s, so freshly-flashed wall-boxes don't show
+        // their Update CTA on the controller until much later.
+        espnow_client::request_full_state();
         go(SCREEN_SETTINGS);
     } else if (state::can_undo() && uih::point_in(g_match_btn_undo, x, y)) {
         espnow_client::send_intent_simple(INTENT_UNDO);
