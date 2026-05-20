@@ -214,8 +214,22 @@ if [[ -z "$HOST_IP" ]]; then
 fi
 echo "[ota] Host IP on $WIFI_IF: $HOST_IP"
 
+# Prefer the macOS system Python at /usr/bin/python3 — Apple ships it
+# signed by them and the Application Firewall trusts it by default
+# ("Allow incoming connections" is pre-installed). Homebrew's python3
+# isn't on that allowlist, so under a corporate MDM that locks the
+# firewall on, espota.py's inbound TCP back-channel from the wall-box
+# is silently dropped. The espota script itself has no Homebrew deps,
+# so /usr/bin/python3 runs it fine.
+PYTHON_BIN="${PYTHON_BIN:-/usr/bin/python3}"
+if [[ ! -x "$PYTHON_BIN" ]]; then
+    PYTHON_BIN="$(command -v python3)"
+    echo "[ota] WARNING: $PYTHON_BIN may not be firewall-allowed."
+fi
+echo "[ota] Python: $PYTHON_BIN"
+
 echo "[ota] Uploading $FIRMWARE_BIN to $WALLBOX_IP:$WALLBOX_OTA_PORT ..."
-python3 "$ESPOTA" \
+"$PYTHON_BIN" "$ESPOTA" \
     --debug \
     --progress \
     --ip="$WALLBOX_IP" \
