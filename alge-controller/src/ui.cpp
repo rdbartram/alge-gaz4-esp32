@@ -1240,13 +1240,22 @@ static void handle_penalty_touch(int16_t x, int16_t y) {
 //  CONFIRM — generic Yes/No prompt for destructive actions.
 // ============================================================================
 static char    g_confirm_message[80] = "";
+static char    g_confirm_yes_label[24] = "JA";
+static uint16_t g_confirm_yes_fg = COLOR_TEXT;
+static uint16_t g_confirm_yes_bg = COLOR_BG_DARK;   // reversed for button helper
 static void  (*g_confirm_yes)() = nullptr;
 static Screen  g_confirm_return  = SCREEN_SETTINGS;
 static uih::Rect g_confirm_btn_yes, g_confirm_btn_no;
 
-static void open_confirm(const char* message, void (*on_yes)()) {
+static void open_confirm(const char* message, void (*on_yes)(),
+                         const char* yes_label = "JA",
+                         uint16_t yes_color = COLOR_PRIMARY) {
     strncpy(g_confirm_message, message, sizeof(g_confirm_message) - 1);
     g_confirm_message[sizeof(g_confirm_message) - 1] = '\0';
+    strncpy(g_confirm_yes_label, yes_label, sizeof(g_confirm_yes_label) - 1);
+    g_confirm_yes_label[sizeof(g_confirm_yes_label) - 1] = '\0';
+    g_confirm_yes_fg = yes_color;
+    g_confirm_yes_bg = COLOR_TEXT;
     g_confirm_yes = on_yes;
     g_confirm_return = g_screen;
     go(SCREEN_CONFIRM);
@@ -1283,7 +1292,8 @@ static void draw_confirm() {
     g_confirm_btn_no  = uih::draw_button(10,  198, 140, 36,
                                          "Abbrechen", COLOR_BG_DARK, COLOR_TEXT, true);
     g_confirm_btn_yes = uih::draw_button(170, 198, 140, 36,
-                                         "JA, LÖSCHEN", COLOR_ERROR, COLOR_BG_DARK, true);
+                                         g_confirm_yes_label,
+                                         g_confirm_yes_fg, g_confirm_yes_bg, true);
 }
 
 static void handle_confirm_touch(int16_t x, int16_t y) {
@@ -1541,9 +1551,11 @@ static void handle_settings_touch(int16_t x, int16_t y) {
             // SCREEN_OTA_UPDATE so the LCD can repaint between chunks.
             open_confirm("Firmware-Update jetzt installieren?",
                          []() {
+                             Serial.println("[ui] OTA confirm → perform_update");
                              client_ota::perform_update();
                              go(SCREEN_OTA_UPDATE);
-                         });
+                         },
+                         "Installieren", COLOR_SUCCESS);
         } else {
             // Destructive: wipes pairing + history + match state and reboots.
             open_confirm("Werkseinstellung, alle Daten gehen verloren?",
@@ -1552,7 +1564,8 @@ static void handle_settings_touch(int16_t x, int16_t y) {
                              espnow_client::send_intent_simple(INTENT_RESET);
                              delay(500);
                              ESP.restart();
-                         });
+                         },
+                         "JA, LÖSCHEN", COLOR_ERROR);
         }
     } else if (uih::point_in(g_set_btn_back, x, y)) {
         go(g_screen_return);
@@ -1921,7 +1934,8 @@ static void handle_history_touch(int16_t x, int16_t y) {
                      []() {
                          espnow_client::send_intent_simple(INTENT_HISTORY_CLEAR);
                          g_history_scroll = 0;
-                     });
+                     },
+                     "JA, LÖSCHEN", COLOR_ERROR);
         return;
     }
     if (uih::point_in(g_hist_btn_back, x, y)) {
