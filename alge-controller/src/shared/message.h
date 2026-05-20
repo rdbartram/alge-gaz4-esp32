@@ -32,6 +32,7 @@ enum MessageType : uint8_t {
     MSG_PAIRING_ACK  = 0x05,  // wallbox -> controller  (accepted / rejected)
     MSG_INTENT_ACK   = 0x06,  // wallbox -> controller  (intent applied/ignored)
     MSG_HISTORY      = 0x07,  // wallbox -> controller  (one entry per packet)
+    MSG_FIRMWARE_AVAIL = 0x08,// wallbox -> controller  (unicast OTA nudge)
 };
 
 // ----- Match states -------------------------------------------------------
@@ -151,8 +152,23 @@ struct IntentPayload {
     uint8_t  u8_b;
     uint16_t u16_a;
     uint16_t u16_b;
+    uint32_t fw_build;                // controller-reported firmware build
+                                      // code, populated on INTENT_NONE
+                                      // heartbeats; 0 elsewhere
     char     opponent[24];            // INTENT_START_MATCH / PRE_MATCH
     DefaultsPayload defaults;         // INTENT_SET_DEFAULTS
+};
+
+// ---- Firmware-available nudge. Unicast from the wall-box to a single
+// controller whose heartbeat-reported build code is older than the
+// embedded one. The controller, if the operator confirms, joins the
+// wall-box SoftAP and HTTP-pulls /controller.bin (size and md5 here so
+// it can verify before flashing).
+struct FwAvailPayload {
+    uint32_t build_code;
+    uint32_t size_bytes;
+    char     md5_hex[33];             // 32 hex chars + null
+    char     fetch_path[16];          // e.g. "/controller.bin"
 };
 
 // ---- Pairing handshake.
@@ -203,6 +219,7 @@ struct ScoreboardMessage {
         PairingPayload  pairing;
         AckPayload      ack;
         HistoryPayload  history;
+        FwAvailPayload  fw_avail;
         uint8_t         raw[80];
     } body;
 

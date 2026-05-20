@@ -5,6 +5,7 @@
 #include "config.h"
 #include "credentials.h"
 #include "state.h"
+#include "ota.h"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -31,7 +32,11 @@ struct Peer {
     int8_t   last_rssi;
     uint16_t last_intent_seq;   // last intent sequence applied (dedup)
     bool     has_intent_seq;    // false until first intent observed
+    uint32_t fw_build;          // controller's reported build code (0 until heard)
+    uint32_t last_fw_offer_ms;  // throttles MSG_FIRMWARE_AVAIL nudges
 };
+
+static constexpr uint32_t FW_OFFER_THROTTLE_MS = 30u * 1000u;
 
 static Peer    g_peers[MAX_PAIRED_PEERS];
 static uint8_t g_peer_count = 0;
@@ -272,6 +277,40 @@ static void handle_intent(const ScoreboardMessage& msg, const uint8_t* from) {
     }
     peer.last_intent_seq = msg.sequence;
     peer.has_intent_seq  = true;
+
+    // Update what we know about this peer's firmware. Heartbeats
+    // (INTENT_NONE) carry the controller's running build code so we
+    // can decide whether to nudge it for OTA.
+    if (msg.body.intent.fw_build != 0) {
+        peer.fw_build = msg.body.intent.fw_build;
+        // Stale + we have a binary to offer + throttle expired → nudge.
+        const uint32_t now = millis();
+        if (peer.fw_build < CONTROLLER_FW_BUILD_EXPECTED &&
+            wb_ota::has_controller_firmware() &&
+            (peer.last_fw_offer_ms == 0 ||
+             now - peer.last_fw_offer_ms >= FW_OFFER_THROTTLE_MS)) {
+            peer.last_fw_offer_ms = now;
+            ScoreboardMessage out = {};
+            out.magic    = MSG_MAGIC;
+            out.version  = MSG_PROTO_VERSION;
+            out.msg_type = MSG_FIRMWARE_AVAIL;
+            out.sequence = ++g_tx_seq;
+            out.body.fw_avail.build_code = CONTROLLER_FW_BUILD_EXPECTED;
+            out.body.fw_avail.size_bytes = wb_ota::controller_firmware_size();
+            strncpy(out.body.fw_avail.md5_hex,
+                    wb_ota::controller_firmware_md5(),
+                    sizeof(out.body.fw_avail.md5_hex) - 1);
+            strncpy(out.body.fw_avail.fetch_path, "/controller.bin",
+                    sizeof(out.body.fw_avail.fetch_path) - 1);
+            scoreboard_msg_sign(&out);
+            esp_now_send(from, (const uint8_t*)&out, sizeof(out));
+            Serial.printf("[espnow] FW nudge -> %02X:%02X:%02X:%02X:%02X:%02X "
+                          "(v%u, was v%u)\n",
+                          from[0], from[1], from[2], from[3], from[4], from[5],
+                          (unsigned)CONTROLLER_FW_BUILD_EXPECTED,
+                          (unsigned)peer.fw_build);
+        }
+    }
 
     wb_state::note_intent_received();
     const bool changed = wb_state::apply_intent(msg.body.intent);

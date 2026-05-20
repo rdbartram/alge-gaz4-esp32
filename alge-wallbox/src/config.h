@@ -66,3 +66,10 @@
 // ----- Version -----------------------------------------------------------
 #define FIRMWARE_VERSION "2.0.0"
 #define FIRMWARE_NAME    "alge-wallbox"
+
+// Monotonic build code for the *controller* firmware the wall-box is
+// expected to distribute. Bump this every time you ship a new
+// controller binary. The wall-box compares against each paired
+// controller's heartbeat-reported build code; if a peer is older, it
+// gets a unicast MSG_FIRMWARE_AVAIL nudge.
+#define CONTROLLER_FW_BUILD_EXPECTED 1u

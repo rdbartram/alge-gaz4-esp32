@@ -8,6 +8,7 @@
 #include "state.h"
 #include "matchmodes.h"
 #include "espnow_client.h"
+#include "client_ota.h"
 #include "crest.h"
 
 #include <M5Unified.h>
@@ -1380,10 +1381,21 @@ static void draw_settings() {
     g_set_btn_history  = uih::draw_button(  8, 124, 150, 28, "Match-Verlauf",   COLOR_BG_DARK, COLOR_TEXT);
     g_set_btn_defaults = uih::draw_button(162, 124, 150, 28, "Vorgaben",        COLOR_BG_DARK, COLOR_TEXT);
 
-    // Factory reset — full-width, sits ABOVE the system info row.
-    g_set_btn_factory  = uih::draw_button(  8, 158, DISPLAY_WIDTH - 16, 22,
-                                          "Werkseinstellung (löscht alles)",
-                                          COLOR_BG_DARK, COLOR_ERROR);
+    // Same row hosts two callsigns. When the wall-box has nudged us
+    // with a firmware offer, the row becomes the "install update" CTA;
+    // otherwise it's the (rarely-used) factory reset. Both run through
+    // the same touch handler which branches on client_ota::has_offer().
+    if (client_ota::has_offer()) {
+        char lbl[40];
+        snprintf(lbl, sizeof(lbl), "Firmware-Update verfügbar — v%u",
+                 (unsigned)client_ota::offer().build_code);
+        g_set_btn_factory = uih::draw_button(8, 158, DISPLAY_WIDTH - 16, 22,
+                                             lbl, COLOR_BG_DARK, COLOR_SUCCESS);
+    } else {
+        g_set_btn_factory = uih::draw_button(8, 158, DISPLAY_WIDTH - 16, 22,
+                                             "Werkseinstellung (löscht alles)",
+                                             COLOR_BG_DARK, COLOR_ERROR);
+    }
 
     // System info — single line below the factory button, comfortable
     // gap before the back button. Drop the "Verlauf: N Match(es)" hint
@@ -1417,16 +1429,22 @@ static void handle_settings_touch(int16_t x, int16_t y) {
         espnow_client::send_intent_simple(INTENT_BLANK);
         show_toast("Tafel gelöscht");
     } else if (uih::point_in(g_set_btn_factory, x, y)) {
-        // Destructive: wipes pairing + history + match state and reboots.
-        // Route through the confirm screen so a stray tap doesn't nuke
-        // everything.
-        open_confirm("Werkseinstellung, alle Daten gehen verloren?",
-                     []() {
-                         espnow_client::send_intent_simple(INTENT_FACTORY_RESET);
-                         espnow_client::send_intent_simple(INTENT_RESET);
-                         delay(500);
-                         ESP.restart();
-                     });
+        if (client_ota::has_offer()) {
+            // Pending firmware offer → confirm screen, then run the
+            // blocking WiFi+download+flash dance. perform_update() ends
+            // in ESP.restart() on success or sets PHASE_ERROR on fail.
+            open_confirm("Firmware-Update jetzt installieren?",
+                         []() { client_ota::perform_update(); });
+        } else {
+            // Destructive: wipes pairing + history + match state and reboots.
+            open_confirm("Werkseinstellung, alle Daten gehen verloren?",
+                         []() {
+                             espnow_client::send_intent_simple(INTENT_FACTORY_RESET);
+                             espnow_client::send_intent_simple(INTENT_RESET);
+                             delay(500);
+                             ESP.restart();
+                         });
+        }
     } else if (uih::point_in(g_set_btn_back, x, y)) {
         go(g_screen_return);
     } else if (uih::point_in(g_set_btn_history, x, y)) {

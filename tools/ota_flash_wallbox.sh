@@ -34,7 +34,10 @@ SKIP_BUILD="${SKIP_BUILD:-0}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 WALLBOX_DIR="$REPO_ROOT/alge-wallbox"
+CONTROLLER_DIR="$REPO_ROOT/alge-controller"
+CONTROLLER_ENV="${CONTROLLER_ENV:-m5stack-core2}"
 FIRMWARE_BIN="$WALLBOX_DIR/.pio/build/$PIO_ENV/firmware.bin"
+CONTROLLER_BIN="$CONTROLLER_DIR/.pio/build/$CONTROLLER_ENV/firmware.bin"
 
 if [[ ! -f "$WALLBOX_DIR/platformio.ini" ]]; then
     echo "[ota] ERROR: no platformio.ini at $WALLBOX_DIR" >&2
@@ -59,13 +62,18 @@ fi
 # updates; once we jump to the wall-box AP that check times out and the
 # upload never starts.
 if [[ "$SKIP_BUILD" != "1" ]]; then
-    echo "[ota] Building firmware (env: $PIO_ENV)..."
+    echo "[ota] Building wall-box firmware (env: $PIO_ENV)..."
     (cd "$WALLBOX_DIR" && pio run -e "$PIO_ENV")
+    echo "[ota] Building controller firmware (env: $CONTROLLER_ENV)..."
+    (cd "$CONTROLLER_DIR" && pio run -e "$CONTROLLER_ENV")
 fi
 
 if [[ ! -f "$FIRMWARE_BIN" ]]; then
-    echo "[ota] ERROR: built firmware not found at $FIRMWARE_BIN" >&2
+    echo "[ota] ERROR: wall-box firmware not found at $FIRMWARE_BIN" >&2
     exit 1
+fi
+if [[ ! -f "$CONTROLLER_BIN" ]]; then
+    echo "[ota] WARNING: controller firmware not at $CONTROLLER_BIN — will only flash wall-box." >&2
 fi
 if ! command -v curl >/dev/null 2>&1; then
     echo "[ota] ERROR: curl not found — install it via Homebrew (already on macOS by default)" >&2
@@ -197,14 +205,55 @@ http_status=$(curl --max-time 60 \
 echo
 
 if [[ "$http_status" == "200" ]]; then
-    echo "[ota] Upload complete — wall-box rebooting into new firmware."
+    echo "[ota] Wall-box upload complete — rebooting into new firmware."
     rm -f "$RESP_BODY"
 else
-    echo "[ota] ERROR: upload failed (status: $http_status)" >&2
+    echo "[ota] ERROR: wall-box upload failed (status: $http_status)" >&2
     if [[ -s "$RESP_BODY" ]]; then
         echo "[ota] Wall-box said:" >&2
         sed 's/^/[ota]   /' "$RESP_BODY" >&2
     fi
     rm -f "$RESP_BODY"
     exit 1
+fi
+
+# After /update the wall-box reboots. Give it ~15 s to come back, then
+# push the controller .bin into its SPIFFS at /controller.bin. Paired
+# controllers heartbeat their fw_build every 5 s; when they report an
+# older version than the wall-box's CONTROLLER_FW_BUILD_EXPECTED, the
+# wall-box unicasts MSG_FIRMWARE_AVAIL to nudge them.
+if [[ -f "$CONTROLLER_BIN" ]]; then
+    echo "[ota] Waiting for wall-box to come back online for controller upload..."
+    for i in $(seq 1 30); do
+        if curl -s --max-time 2 -o /dev/null "http://$WALLBOX_IP/" ; then
+            echo "[ota]   wall-box up."
+            break
+        fi
+        sleep 1
+        if [[ $i == 30 ]]; then
+            echo "[ota] WARNING: wall-box didn't come back in time — skipping controller upload." >&2
+            exit 0
+        fi
+    done
+
+    echo "[ota] Uploading $CONTROLLER_BIN to http://$WALLBOX_IP/controller-update ..."
+    RESP_BODY="/tmp/ota_ctrl_response.$$"
+    http_status=$(curl --max-time 60 \
+        --progress-bar \
+        --form "firmware=@$CONTROLLER_BIN" \
+        --write-out '%{http_code}' \
+        --output "$RESP_BODY" \
+        "http://$WALLBOX_IP/controller-update" || echo "curl-failed")
+    echo
+    if [[ "$http_status" == "200" ]]; then
+        echo "[ota] Controller binary stored on wall-box:"
+        sed 's/^/[ota]   /' "$RESP_BODY"
+        echo "[ota] Paired controllers will be nudged on their next heartbeat."
+    else
+        echo "[ota] WARNING: controller-update failed (status: $http_status)" >&2
+        if [[ -s "$RESP_BODY" ]]; then
+            sed 's/^/[ota]   /' "$RESP_BODY" >&2
+        fi
+    fi
+    rm -f "$RESP_BODY"
 fi

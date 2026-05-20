@@ -22,6 +22,8 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <Update.h>
+#include <SPIFFS.h>
+#include <MD5Builder.h>
 
 namespace wb_ota {
 
@@ -44,6 +46,44 @@ static volatile uint32_t g_bytes_total    = 0;
 bool     in_progress()    { return g_in_progress; }
 uint32_t bytes_received() { return g_bytes_received; }
 uint32_t bytes_total()    { return g_bytes_total; }
+
+// --- Bundled controller firmware -----------------------------------------
+// The controller binary lives at /controller.bin in SPIFFS. On boot we
+// scan its size + MD5 once so MSG_FIRMWARE_AVAIL packets can ship that
+// metadata to paired controllers without re-reading on every offer.
+static constexpr const char* CTRL_FW_PATH = "/controller.bin";
+static bool     g_ctrl_fw_present = false;
+static uint32_t g_ctrl_fw_size    = 0;
+static char     g_ctrl_fw_md5[33] = {0};
+
+static void rescan_controller_firmware() {
+    g_ctrl_fw_present = false;
+    g_ctrl_fw_size    = 0;
+    g_ctrl_fw_md5[0]  = '\0';
+    if (!SPIFFS.exists(CTRL_FW_PATH)) {
+        Serial.println("[ota] no controller.bin bundled");
+        return;
+    }
+    File f = SPIFFS.open(CTRL_FW_PATH, "r");
+    if (!f) return;
+    g_ctrl_fw_size = f.size();
+    MD5Builder md5;
+    md5.begin();
+    uint8_t buf[512];
+    while (size_t n = f.read(buf, sizeof(buf))) {
+        md5.add(buf, n);
+    }
+    f.close();
+    md5.calculate();
+    md5.getChars(g_ctrl_fw_md5);
+    g_ctrl_fw_present = true;
+    Serial.printf("[ota] controller.bin: %u bytes, md5=%s\n",
+                  (unsigned)g_ctrl_fw_size, g_ctrl_fw_md5);
+}
+
+bool     has_controller_firmware()    { return g_ctrl_fw_present; }
+uint32_t controller_firmware_size()   { return g_ctrl_fw_size; }
+const char* controller_firmware_md5() { return g_ctrl_fw_md5; }
 
 static void handle_root() {
     // Minimal landing page so a stray browser visit to 192.168.4.1
@@ -129,6 +169,68 @@ static void handle_upload() {
     }
 }
 
+// --- Controller-binary upload handlers -----------------------------------
+// Separate route (/controller-update) writes the bundled controller .bin
+// into SPIFFS at /controller.bin. We do NOT call Update.* here — this
+// payload isn't our own firmware, it's the controller's. The actual
+// flash happens on the controller side once it WiFi-pulls /controller.bin.
+static File g_ctrl_upload_file;
+
+static void handle_controller_upload_post() {
+    if (!SPIFFS.exists(CTRL_FW_PATH)) {
+        server.send(500, "text/plain", "FAIL: no file written\n");
+        return;
+    }
+    rescan_controller_firmware();
+    char body[80];
+    snprintf(body, sizeof(body), "OK %u bytes md5=%s\n",
+             (unsigned)g_ctrl_fw_size, g_ctrl_fw_md5);
+    server.send(200, "text/plain", body);
+    Serial.printf("[ota] controller firmware updated: %s", body);
+}
+
+static void handle_controller_upload() {
+    HTTPUpload& upload = server.upload();
+    if (upload.status == UPLOAD_FILE_START) {
+        Serial.printf("[ota] controller upload start: %s\n",
+                      upload.filename.c_str());
+        if (SPIFFS.exists(CTRL_FW_PATH)) SPIFFS.remove(CTRL_FW_PATH);
+        g_ctrl_upload_file = SPIFFS.open(CTRL_FW_PATH, "w");
+        if (!g_ctrl_upload_file) {
+            Serial.println("[ota] FAILED to open controller.bin for write");
+        }
+    } else if (upload.status == UPLOAD_FILE_WRITE) {
+        if (g_ctrl_upload_file) {
+            g_ctrl_upload_file.write(upload.buf, upload.currentSize);
+        }
+    } else if (upload.status == UPLOAD_FILE_END) {
+        if (g_ctrl_upload_file) {
+            g_ctrl_upload_file.close();
+            Serial.printf("[ota] controller upload complete: %u bytes\n",
+                          (unsigned)upload.totalSize);
+        }
+    } else if (upload.status == UPLOAD_FILE_ABORTED) {
+        if (g_ctrl_upload_file) g_ctrl_upload_file.close();
+        SPIFFS.remove(CTRL_FW_PATH);
+        Serial.println("[ota] controller upload aborted");
+    }
+}
+
+static void handle_controller_get() {
+    if (!SPIFFS.exists(CTRL_FW_PATH)) {
+        server.send(404, "text/plain", "controller.bin not bundled\n");
+        return;
+    }
+    File f = SPIFFS.open(CTRL_FW_PATH, "r");
+    if (!f) {
+        server.send(500, "text/plain", "open failed\n");
+        return;
+    }
+    server.sendHeader("Content-Length", String(f.size()));
+    server.streamFile(f, "application/octet-stream");
+    f.close();
+}
+
 void begin() {
     // Stay AP+STA (the STA side is already initialised by espnow_server::
     // begin()); the SoftAP is what hosts the OTA endpoint. ESP-NOW + AP
@@ -140,10 +242,25 @@ void begin() {
     Serial.printf("[ota] SoftAP up: SSID=%s  IP=%s\n", AP_SSID,
                   WiFi.softAPIP().toString().c_str());
 
+    // SPIFFS holds the bundled controller .bin so paired controllers can
+    // pull it over HTTP after a heartbeat-triggered MSG_FIRMWARE_AVAIL
+    // offer. Format on first boot (or after a partition wipe).
+    if (!SPIFFS.begin(/*formatOnFail=*/true)) {
+        Serial.println("[ota] SPIFFS mount FAILED");
+    } else {
+        rescan_controller_firmware();
+    }
+
     server.on("/", HTTP_GET, handle_root);
     server.on("/update", HTTP_POST, handle_update_post, handle_upload);
+    server.on("/controller-update", HTTP_POST,
+              handle_controller_upload_post, handle_controller_upload);
+    server.on("/controller.bin", HTTP_GET, handle_controller_get);
     server.begin();
-    Serial.println("[ota] HTTP server listening on :80, POST /update");
+    Serial.println("[ota] HTTP server listening on :80");
+    Serial.println("[ota]   POST /update             — wall-box firmware");
+    Serial.println("[ota]   POST /controller-update  — bundled controller firmware");
+    Serial.println("[ota]   GET  /controller.bin     — fetched by controllers");
 }
 
 void loop() {

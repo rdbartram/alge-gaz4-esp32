@@ -25,4 +25,13 @@ bool     in_progress();
 uint32_t bytes_received();
 uint32_t bytes_total();
 
+// Bundled controller firmware accessors. The wall-box's HTTP server
+// accepts a separate upload of the controller .bin at
+//   POST http://192.168.4.1/controller-update
+// and stashes it in SPIFFS. The accessors below let espnow_server tell
+// paired controllers what's available via MSG_FIRMWARE_AVAIL.
+bool     has_controller_firmware();
+uint32_t controller_firmware_size();
+const char* controller_firmware_md5();          // 32 hex chars + null
+
 } // namespace wb_ota

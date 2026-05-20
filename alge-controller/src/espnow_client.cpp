@@ -5,6 +5,7 @@
 #include "config.h"
 #include "credentials.h"
 #include "state.h"
+#include "client_ota.h"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -106,9 +107,10 @@ void loop() {
     // Heartbeat once paired: send a zero-payload INTENT_NONE every 5 s so
     // the wallbox can distinguish "controller silent because nothing's
     // happening in the match" from "controller actually went away".
-    // Without this, a quiet half (no scores, no clock edits) would trip
-    // the wallbox's connection-lost banner and replace the score with
-    // FUNK VERLOREN — even though everything is fine.
+    // The fw_build field lets the wall-box decide whether to nudge us
+    // for an OTA update — it compares against its bundled
+    // CONTROLLER_FW_BUILD_EXPECTED and unicasts MSG_FIRMWARE_AVAIL to
+    // us alone if we're older.
     if (g_have_pair) {
         const uint32_t now = millis();
         static uint32_t s_last_hb_ms = 0;
@@ -116,6 +118,7 @@ void loop() {
             s_last_hb_ms = now;
             IntentPayload it = {};
             it.intent_type = INTENT_NONE;
+            it.fw_build    = CONTROLLER_FW_BUILD;
             send_intent(it);
         }
     }
@@ -291,6 +294,11 @@ static void on_recv(const esp_now_recv_info_t* info, const uint8_t* data, int le
     case MSG_HISTORY:
         if (g_have_pair && memcmp(from, g_wallbox_mac, 6) == 0) {
             state::update_from_history(msg.body.history);
+        }
+        break;
+    case MSG_FIRMWARE_AVAIL:
+        if (g_have_pair && memcmp(from, g_wallbox_mac, 6) == 0) {
+            client_ota::note_offer(msg.body.fw_avail);
         }
         break;
     case MSG_PAIRING_REQ:
