@@ -33,3 +33,4 @@ venv/
 # Build outputs not relevant for sharing
 *.lst
 *.disasm
+alge-wallbox/data/
