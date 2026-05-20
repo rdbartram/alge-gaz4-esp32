@@ -128,6 +128,8 @@ static void handle_defaults_touch(int16_t x, int16_t y);
 static void draw_confirm();
 static void handle_confirm_touch(int16_t x, int16_t y);
 static void draw_pairing();
+static void draw_ota_update();
+static void handle_ota_update_touch(int16_t x, int16_t y);
 static void handle_pairing_touch(int16_t x, int16_t y);
 static void draw_link_banner();
 static void check_long_press();
@@ -259,6 +261,14 @@ void tick() {
             }
         }
     }
+    // OTA update — step the download state machine and force a redraw
+    // each pass so the progress bar moves. step() is non-blocking and
+    // does at most one ~1 KB chunk per call, so the LCD repaints fast.
+    if (g_screen == SCREEN_OTA_UPDATE) {
+        client_ota::step();
+        g_invalidate = true;   // redraw every tick so the bar advances
+    }
+
     // Per-second clock tick triggers a partial redraw (clock + state
     // label only). Full fillScreen + redraw at 500 ms is what caused the
     // whole-screen flash while the match clock was running.
@@ -345,6 +355,7 @@ static void draw() {
     case SCREEN_DEFAULTS:      draw_defaults(); break;
     case SCREEN_CONFIRM:       draw_confirm(); break;
     case SCREEN_PAIRING:       draw_pairing(); break;
+    case SCREEN_OTA_UPDATE:    draw_ota_update(); break;
     }
 }
 
@@ -378,6 +389,7 @@ static void handle_touch(int16_t x, int16_t y) {
     case SCREEN_DEFAULTS:      handle_defaults_touch(x, y); break;
     case SCREEN_CONFIRM:       handle_confirm_touch(x, y); break;
     case SCREEN_PAIRING:       handle_pairing_touch(x, y); break;
+    case SCREEN_OTA_UPDATE:    handle_ota_update_touch(x, y); break;
     }
     invalidate();
 }
@@ -1343,6 +1355,89 @@ static void handle_pairing_touch(int16_t x, int16_t y) {
 }
 
 // ============================================================================
+//  OTA UPDATE — full-screen progress while client_ota's state machine
+//  joins the wall-box AP and pulls the bundled controller.bin.
+// ============================================================================
+static uih::Rect g_ota_btn_back;
+
+static void draw_ota_update() {
+    auto& d = M5.Display;
+    uih::draw_header("FIRMWARE-UPDATE");
+
+    const auto p     = client_ota::phase();
+    const uint32_t r = client_ota::bytes_received();
+    const uint32_t t = client_ota::bytes_total();
+
+    const char* phase_line = "";
+    uint16_t    phase_color = COLOR_TEXT;
+    switch (p) {
+    case client_ota::PHASE_IDLE:
+        phase_line  = "Bereit"; phase_color = COLOR_DIM; break;
+    case client_ota::PHASE_JOIN_AP:
+        phase_line  = "Verbinde mit Wallbox-AP…"; phase_color = COLOR_ACCENT; break;
+    case client_ota::PHASE_DOWNLOAD:
+        phase_line  = "Lade Firmware…";           phase_color = COLOR_ACCENT; break;
+    case client_ota::PHASE_REBOOT:
+        phase_line  = "Neustart…";                phase_color = COLOR_SUCCESS; break;
+    case client_ota::PHASE_ERROR:
+        phase_line  = "Fehler";                   phase_color = COLOR_ERROR; break;
+    }
+    uih::centre_text(DISPLAY_WIDTH / 2, 50, phase_line, phase_color,
+                     &fonts::efontJA_16);
+
+    // Progress bar — 240 px wide, 22 high, centred.
+    const int bw = 240, bh = 22;
+    const int bx = (DISPLAY_WIDTH - bw) / 2;
+    const int by = 90;
+    d.drawRoundRect(bx, by, bw, bh, 4, COLOR_TEXT);
+    if (t > 0 && (p == client_ota::PHASE_DOWNLOAD || p == client_ota::PHASE_REBOOT)) {
+        const int fill_w = (int)((uint64_t)(bw - 4) * r / t);
+        d.fillRoundRect(bx + 2, by + 2, fill_w, bh - 4, 3, COLOR_SUCCESS);
+        char pct[8];
+        snprintf(pct, sizeof(pct), "%u %%",
+                 (unsigned)((uint64_t)r * 100 / t));
+        uih::centre_text(DISPLAY_WIDTH / 2, 124, pct, COLOR_TEXT,
+                         &fonts::FreeSansBold18pt7b);
+        char bytes[40];
+        snprintf(bytes, sizeof(bytes), "%u / %u KB",
+                 (unsigned)(r / 1024), (unsigned)(t / 1024));
+        uih::centre_text(DISPLAY_WIDTH / 2, 154, bytes, COLOR_DIM,
+                         &fonts::efontJA_14);
+    } else if (p == client_ota::PHASE_JOIN_AP) {
+        // Indeterminate barber-pole while we wait for WiFi to associate.
+        static int slide = 0;
+        slide = (slide + 6) % (bw + 30);
+        const int seg_w = 40;
+        const int x0    = bx + 2 + (slide < seg_w ? 0 : slide - seg_w);
+        const int x1    = bx + 2 + (slide > bw - 4 ? bw - 4 : slide);
+        if (x1 > x0) {
+            d.fillRoundRect(x0, by + 2, x1 - x0, bh - 4, 3, COLOR_ACCENT);
+        }
+    }
+
+    if (p == client_ota::PHASE_ERROR) {
+        uih::centre_text(DISPLAY_WIDTH / 2, 130,
+                         client_ota::error_message(), COLOR_WARN,
+                         &fonts::efontJA_14);
+        g_ota_btn_back = uih::draw_button(10, 204, DISPLAY_WIDTH - 20, 30,
+                                          "< Zurück", COLOR_PRIMARY, COLOR_TEXT);
+    } else {
+        // No back button during JOIN/DOWNLOAD — interrupting an OTA
+        // mid-flash bricks the controller until it's USB-flashed again.
+        g_ota_btn_back = {0, 0, 0, 0};
+        uih::centre_text(DISPLAY_WIDTH / 2, 200, "Bitte nicht ausschalten",
+                         COLOR_WARN, &fonts::efontJA_14);
+    }
+}
+
+static void handle_ota_update_touch(int16_t x, int16_t y) {
+    if (client_ota::phase() == client_ota::PHASE_ERROR &&
+        uih::point_in(g_ota_btn_back, x, y)) {
+        go(SCREEN_SETTINGS);
+    }
+}
+
+// ============================================================================
 //  SETTINGS
 // ============================================================================
 static uih::Rect g_set_btn_repair, g_set_btn_polarity, g_set_btn_exercise;
@@ -1430,11 +1525,15 @@ static void handle_settings_touch(int16_t x, int16_t y) {
         show_toast("Tafel gelöscht");
     } else if (uih::point_in(g_set_btn_factory, x, y)) {
         if (client_ota::has_offer()) {
-            // Pending firmware offer → confirm screen, then run the
-            // blocking WiFi+download+flash dance. perform_update() ends
-            // in ESP.restart() on success or sets PHASE_ERROR on fail.
+            // Pending firmware offer → confirm screen, then drop the
+            // operator onto the OTA progress screen and kick the state
+            // machine. tick() polls client_ota::step() while we're on
+            // SCREEN_OTA_UPDATE so the LCD can repaint between chunks.
             open_confirm("Firmware-Update jetzt installieren?",
-                         []() { client_ota::perform_update(); });
+                         []() {
+                             client_ota::perform_update();
+                             go(SCREEN_OTA_UPDATE);
+                         });
         } else {
             // Destructive: wipes pairing + history + match state and reboots.
             open_confirm("Werkseinstellung, alle Daten gehen verloren?",

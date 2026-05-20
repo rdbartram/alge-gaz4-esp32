@@ -23,6 +23,7 @@ enum Screen : uint8_t {
     SCREEN_DEFAULTS,
     SCREEN_CONFIRM,   // generic Yes/No prompt used before destructive actions
     SCREEN_PAIRING,   // "Neu koppeln" handshake while we wait for the wallbox
+    SCREEN_OTA_UPDATE,// firmware download in progress (renders a progress bar)
 };
 
 void begin();

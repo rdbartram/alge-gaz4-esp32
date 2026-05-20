@@ -38,8 +38,13 @@ uint32_t bytes_received();
 uint32_t bytes_total();
 const char* error_message();
 
-// Operator confirmation — kicks off the download/flash. Blocks until
-// either success (ESP.restart()) or failure.
+// Operator confirmation — kicks off the WiFi join and arms the state
+// machine. Returns immediately; call step() from the UI tick to make
+// forward progress so the LCD can render between chunks.
 void perform_update();
+
+// One step of the OTA state machine. Non-blocking — does at most ~1 KB
+// of HTTP read + Update.write() per call. Safe to call when idle.
+void step();
 
 } // namespace client_ota
