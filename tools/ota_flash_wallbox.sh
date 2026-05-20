@@ -126,9 +126,67 @@ if [[ "$RAW" == *":"* && "$RAW" != *"not associated"* ]]; then
 fi
 echo "[ota] Current SSID: ${PREV_SSID:-<none>}"
 
+current_ssid() {
+    local raw
+    raw=$(networksetup -getairportnetwork "$WIFI_IF" 2>/dev/null || true)
+    if [[ "$raw" == *":"* && "$raw" != *"not associated"* ]]; then
+        echo "${raw#*: }"
+    fi
+}
+
 if [[ "$PREV_SSID" != "$WALLBOX_SSID" ]]; then
     echo "[ota] Joining $WALLBOX_SSID ..."
-    networksetup -setairportnetwork "$WIFI_IF" "$WALLBOX_SSID" "$WALLBOX_PASS"
+    # Try up to 5 times — macOS only scans for new APs periodically, and a
+    # wall-box that just powered on may not be in the scan cache yet. A
+    # bare networksetup call fails with "Could not find network ..." in
+    # that window; sleep + retry handles it.
+    JOINED=0
+    for attempt in 1 2 3 4 5; do
+        if networksetup -setairportnetwork "$WIFI_IF" \
+                "$WALLBOX_SSID" "$WALLBOX_PASS" 2>&1 | grep -qi "could not"; then
+            echo "[ota]   attempt $attempt: not seen yet, scanning..."
+            sleep 5
+            continue
+        fi
+        sleep 2   # let DHCP settle
+        if [[ "$(current_ssid)" == "$WALLBOX_SSID" ]]; then
+            JOINED=1
+            break
+        fi
+        echo "[ota]   attempt $attempt: join didn't stick, retrying..."
+        sleep 3
+    done
+
+    if [[ "$JOINED" != "1" ]]; then
+        cat >&2 <<EOF
+[ota] ERROR: couldn't join $WALLBOX_SSID after 5 attempts.
+[ota] Things to check:
+[ota]   - Wall-box is powered on and running our firmware (LCD lit)
+[ota]   - Wall-box is within range of this Mac
+[ota]   - SSID '$WALLBOX_SSID' is visible in System Settings > WiFi
+[ota]     (if not, the wall-box's SoftAP isn't broadcasting — reboot it
+[ota]     by power-cycling, then re-run this script)
+EOF
+        exit 1
+    fi
+
+    # Confirm the join actually put us on the wall-box's 192.168.4.0/24
+    # subnet — if macOS silently reverted to a preferred network with a
+    # similarly-named SSID, or kept multiple interfaces up, ping(8) to
+    # 192.168.4.1 could "succeed" via a totally unrelated route. The
+    # local IP check is the only thing that proves we're talking to the
+    # right device.
+    HOST_IP_NOW=$(ipconfig getifaddr "$WIFI_IF" 2>/dev/null || true)
+    if [[ "$HOST_IP_NOW" != 192.168.4.* ]]; then
+        cat >&2 <<EOF
+[ota] ERROR: joined SSID '$WALLBOX_SSID' but $WIFI_IF is at $HOST_IP_NOW,
+[ota] not on the wall-box's 192.168.4.0/24 subnet. The wall-box's DHCP
+[ota] (or our local DHCP client) didn't complete. Try again — if it
+[ota] keeps happening, power-cycle the wall-box.
+EOF
+        exit 1
+    fi
+    echo "[ota] On wall-box AP. Local IP: $HOST_IP_NOW"
 
     echo -n "[ota] Waiting for $WALLBOX_IP to respond"
     for i in $(seq 1 30); do
@@ -141,7 +199,6 @@ if [[ "$PREV_SSID" != "$WALLBOX_SSID" ]]; then
         if [[ $i == 30 ]]; then
             echo
             echo "[ota] ERROR: $WALLBOX_IP didn't respond after 30 s." >&2
-            echo "[ota] Is the wall-box powered on and within range?"  >&2
             exit 1
         fi
     done
