@@ -126,15 +126,23 @@ if [[ "$RAW" == *":"* && "$RAW" != *"not associated"* ]]; then
 fi
 echo "[ota] Current SSID: ${PREV_SSID:-<none>}"
 
-current_ssid() {
-    local raw
-    raw=$(networksetup -getairportnetwork "$WIFI_IF" 2>/dev/null || true)
-    if [[ "$raw" == *":"* && "$raw" != *"not associated"* ]]; then
-        echo "${raw#*: }"
-    fi
+# Read the WiFi interface's current IPv4. Use this as the ground truth
+# of "are we on the wall-box AP" — macOS Sonoma/Sequoia restricts
+# `networksetup -getairportnetwork` for privacy and it now returns
+# "not associated" even when you're connected, unless the caller has
+# Location Services. The IP doesn't lie.
+current_ip() {
+    ipconfig getifaddr "$WIFI_IF" 2>/dev/null || true
 }
 
-if [[ "$PREV_SSID" != "$WALLBOX_SSID" ]]; then
+CURR_IP=$(current_ip)
+ON_WALLBOX_AP=0
+if [[ "$CURR_IP" == 192.168.4.* ]]; then
+    ON_WALLBOX_AP=1
+    echo "[ota] Already on wall-box AP (IP: $CURR_IP)."
+fi
+
+if [[ "$ON_WALLBOX_AP" != "1" ]]; then
     echo "[ota] Joining $WALLBOX_SSID ..."
     # Try up to 5 times — macOS only scans for new APs periodically, and a
     # wall-box that just powered on may not be in the scan cache yet. A
@@ -144,49 +152,39 @@ if [[ "$PREV_SSID" != "$WALLBOX_SSID" ]]; then
     for attempt in 1 2 3 4 5; do
         if networksetup -setairportnetwork "$WIFI_IF" \
                 "$WALLBOX_SSID" "$WALLBOX_PASS" 2>&1 | grep -qi "could not"; then
-            echo "[ota]   attempt $attempt: not seen yet, scanning..."
+            echo "[ota]   attempt $attempt: AP not in scan cache yet, waiting..."
             sleep 5
             continue
         fi
-        sleep 2   # let DHCP settle
-        if [[ "$(current_ssid)" == "$WALLBOX_SSID" ]]; then
-            JOINED=1
-            break
-        fi
-        echo "[ota]   attempt $attempt: join didn't stick, retrying..."
-        sleep 3
+        # Wait for DHCP — the join can return success while the lease is
+        # still negotiating. Poll the interface IP up to 10 s.
+        for _ in $(seq 1 10); do
+            CURR_IP=$(current_ip)
+            if [[ "$CURR_IP" == 192.168.4.* ]]; then
+                JOINED=1
+                break 2
+            fi
+            sleep 1
+        done
+        echo "[ota]   attempt $attempt: joined but no 192.168.4.x lease yet, retrying..."
     done
 
     if [[ "$JOINED" != "1" ]]; then
         cat >&2 <<EOF
-[ota] ERROR: couldn't join $WALLBOX_SSID after 5 attempts.
+[ota] ERROR: couldn't end up on the wall-box's 192.168.4.0/24 subnet.
+[ota] Last $WIFI_IF IP: ${CURR_IP:-<none>}
 [ota] Things to check:
 [ota]   - Wall-box is powered on and running our firmware (LCD lit)
 [ota]   - Wall-box is within range of this Mac
 [ota]   - SSID '$WALLBOX_SSID' is visible in System Settings > WiFi
 [ota]     (if not, the wall-box's SoftAP isn't broadcasting — reboot it
 [ota]     by power-cycling, then re-run this script)
+[ota]   - If the SSID IS visible, click-join it once manually so macOS
+[ota]     caches the credentials, then re-run.
 EOF
         exit 1
     fi
-
-    # Confirm the join actually put us on the wall-box's 192.168.4.0/24
-    # subnet — if macOS silently reverted to a preferred network with a
-    # similarly-named SSID, or kept multiple interfaces up, ping(8) to
-    # 192.168.4.1 could "succeed" via a totally unrelated route. The
-    # local IP check is the only thing that proves we're talking to the
-    # right device.
-    HOST_IP_NOW=$(ipconfig getifaddr "$WIFI_IF" 2>/dev/null || true)
-    if [[ "$HOST_IP_NOW" != 192.168.4.* ]]; then
-        cat >&2 <<EOF
-[ota] ERROR: joined SSID '$WALLBOX_SSID' but $WIFI_IF is at $HOST_IP_NOW,
-[ota] not on the wall-box's 192.168.4.0/24 subnet. The wall-box's DHCP
-[ota] (or our local DHCP client) didn't complete. Try again — if it
-[ota] keeps happening, power-cycle the wall-box.
-EOF
-        exit 1
-    fi
-    echo "[ota] On wall-box AP. Local IP: $HOST_IP_NOW"
+    echo "[ota] On wall-box AP. Local IP: $CURR_IP"
 
     echo -n "[ota] Waiting for $WALLBOX_IP to respond"
     for i in $(seq 1 30); do
