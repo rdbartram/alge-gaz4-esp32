@@ -170,6 +170,16 @@ void handle_button() {
 } // namespace
 
 void setup() {
+    // T-Display-S3 GPIO 15 gates the LCD + peripheral power island via an
+    // on-board switch. USB-C boot happens to leave it latched HIGH (via
+    // the serial bridge's enable signal), which is why the board appears
+    // to "just work" over USB — but when powered from raw 5 V on the
+    // breakout pad the rail starts at 0 and the LCD never lights up.
+    // Drive it HIGH before *anything* else so the splash actually renders.
+    // (See LilyGo issue #140 / #205.)
+    pinMode(15, OUTPUT);
+    digitalWrite(15, HIGH);
+
     Serial.begin(115200);
     delay(100);
     Serial.printf("\n=== %s v%s booting ===\n", FIRMWARE_NAME, FIRMWARE_VERSION);
