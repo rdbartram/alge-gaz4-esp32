@@ -7,6 +7,8 @@
 #include "espnow_client.h"
 #include "client_ota.h"
 
+#include <cmath>
+
 namespace uih {
 
 bool point_in(const Rect& r, int16_t px, int16_t py) {
@@ -212,35 +214,32 @@ void draw_link_icon(int16_t x, int16_t y, bool linked, int8_t rssi) {
 }
 
 void draw_gear_icon(int16_t x, int16_t y) {
-    // Old icon was two concentric circles — read as "blob", not gear.
-    // Hand-stamped 16×16 bitmap of a proper 8-tooth cog so it actually
-    // looks like a gear. 1 = body pixel, 0 = transparent.
-    static const uint8_t GEAR[16][16] = {
-        {0,0,0,0,0,0,1,1,1,1,0,0,0,0,0,0},
-        {0,0,0,0,0,0,1,1,1,1,0,0,0,0,0,0},
-        {0,0,1,0,0,1,1,1,1,1,1,0,0,1,0,0},
-        {0,0,1,1,1,1,1,0,0,1,1,1,1,1,0,0},
-        {0,0,0,1,1,1,0,0,0,0,1,1,1,0,0,0},
-        {0,0,0,1,1,0,0,0,0,0,0,1,1,0,0,0},
-        {1,1,1,1,0,0,0,0,0,0,0,0,1,1,1,1},
-        {1,1,1,0,0,0,0,1,1,0,0,0,0,1,1,1},
-        {1,1,1,0,0,0,0,1,1,0,0,0,0,1,1,1},
-        {1,1,1,1,0,0,0,0,0,0,0,0,1,1,1,1},
-        {0,0,0,1,1,0,0,0,0,0,0,1,1,0,0,0},
-        {0,0,0,1,1,1,0,0,0,0,1,1,1,0,0,0},
-        {0,0,1,1,1,1,1,0,0,1,1,1,1,1,0,0},
-        {0,0,1,0,0,1,1,1,1,1,1,0,0,1,0,0},
-        {0,0,0,0,0,0,1,1,1,1,0,0,0,0,0,0},
-        {0,0,0,0,0,0,1,1,1,1,0,0,0,0,0,0},
-    };
+    // Procedural 8-tooth cog. For each pixel inside the 16x16 box we
+    // compute polar (r, θ) from the centre. The "rim" radius depends
+    // on θ — modulated by cos(8θ) so we get 8 evenly-spaced teeth:
+    //   - at a tooth peak (cos = +1) the rim sits at OUTER (7 px)
+    //   - in a tooth valley (cos = -1) the rim falls back to BODY (5 px)
+    // Pixels inside the rim are gear body; the inner hole carves out
+    // the hub. Anti-alias-free but at 16×16 the eye still locks onto
+    // the gear silhouette much better than a hand-stamped bitmap.
     auto& d = M5.Display;
+    constexpr float CX = 7.5f, CY = 7.5f;
+    constexpr float BODY  = 5.0f;
+    constexpr float OUTER = 7.0f;
+    constexpr float INNER = 2.6f;
     for (int row = 0; row < 16; ++row) {
         for (int col = 0; col < 16; ++col) {
-            if (GEAR[row][col]) d.drawPixel(x + col, y + row, COLOR_DIM);
+            const float dx = col - CX;
+            const float dy = row - CY;
+            const float r  = sqrtf(dx * dx + dy * dy);
+            if (r > OUTER || r < INNER) continue;
+            const float th = atan2f(dy, dx);
+            const float tooth = 0.5f + 0.5f * cosf(8.0f * th); // 0..1
+            const float rim = BODY + (OUTER - BODY) * tooth;
+            if (r <= rim) d.drawPixel(x + col, y + row, COLOR_DIM);
         }
     }
-    // Hub dot in accent so the eye locks onto the centre.
-    d.fillCircle(x + 8, y + 8, 1, COLOR_PRIMARY);
+    d.fillCircle(x + 8, y + 8, 1, COLOR_PRIMARY);   // hub dot
 }
 
 } // namespace uih
