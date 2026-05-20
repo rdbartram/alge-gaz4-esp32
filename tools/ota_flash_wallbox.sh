@@ -93,13 +93,15 @@ restore_wifi() {
 }
 trap restore_wifi EXIT INT TERM
 
-# `networksetup -getairportnetwork` output:
-#   "Current Wi-Fi Network: <SSID>"   when joined
-#   "You are not associated with an AirPort network."   when not
-RAW=$(networksetup -getairportnetwork "$WIFI_IF" 2>/dev/null || true)
-if [[ "$RAW" == *":"* && "$RAW" != *"not associated"* ]]; then
-    PREV_SSID="${RAW#*: }"
-fi
+# macOS Sonoma/Sequoia restricts `networksetup -getairportnetwork` for
+# privacy — it returns "not associated" even when WiFi is connected
+# unless the caller has Location Services. `ipconfig getsummary` doesn't
+# need any entitlement and exposes the SSID in its dump:
+#   BSSID : ab:cd:...
+#     SSID : MyHomeWifi
+PREV_SSID=$(ipconfig getsummary "$WIFI_IF" 2>/dev/null \
+            | awk -F ' SSID : ' '/ SSID : /{print $2; exit}' \
+            | tr -d ' ' || true)
 echo "[ota] Current SSID: ${PREV_SSID:-<none>}"
 
 # Read the WiFi interface's current IPv4. Use this as the ground truth

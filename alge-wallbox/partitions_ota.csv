@@ -1,0 +1,18 @@
+# Dual-app-slot partition table for OTA.
+#
+# huge_app.csv gave us a single 3 MB app partition with no room for an
+# OTA write target — every OTA attempt errored with NO_PARTITION (err=10).
+# This layout reserves two 3 MB app slots so Update.begin() can write
+# the inactive one and then flip the boot pointer.
+#
+# Flash budget on the T-Display-S3 (16 MB): bootloader/partition table
+# (~64 KB) + nvs (20 KB) + otadata (8 KB) + app0 (3 MB) + app1 (3 MB) +
+# remainder as SPIFFS for future use. NVS offset matches huge_app so
+# existing match history / defaults survive the flash-layout change.
+#
+# Name,     Type, SubType, Offset,   Size,     Flags
+nvs,        data, nvs,     0x9000,   0x5000,
+otadata,    data, ota,     0xe000,   0x2000,
+app0,       app,  ota_0,   0x10000,  0x300000,
+app1,       app,  ota_1,   0x310000, 0x300000,
+spiffs,     data, spiffs,  0x610000, 0x9E0000,

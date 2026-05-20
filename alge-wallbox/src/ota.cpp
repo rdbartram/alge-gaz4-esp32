@@ -74,6 +74,12 @@ static void handle_update_post() {
                  Update.errorString());
         server.send(500, "text/plain", body);
         Serial.printf("[ota] update FAILED: %s\n", body);
+        // Clear the WB_OTA_UPDATE screen so we don't get stuck at "100 %"
+        // forever. The main loop's mode auto-sync (tick() in state.cpp)
+        // sees a non-OTA mode and routes us to either WB_MATCH_LIVE or
+        // WB_PAIRED_IDLE based on the live match state.
+        g_in_progress = false;
+        wb_state::set_wb_mode(wb_state::WB_PAIRED_IDLE);
     }
 }
 
