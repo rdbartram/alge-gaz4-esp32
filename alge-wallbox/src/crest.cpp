@@ -2,10 +2,21 @@
 // Project: alge-wallbox
 // Boot crest:   60x60 RGB565 (3600 px)
 // Header icon:  24x24 PNG (1877 bytes)
+// NOTE: Big PNG path declared but unpopulated — run tools/make_crest.py
+// after `pip install pillow` to regenerate this file with the proper
+// 130x130 boot PNG. Until then CREST_PNG_LEN=0 and the wall-box boot
+// falls back to the legacy 60x60 RGB565 array.
 #include "crest.h"
 
-const uint16_t CREST_WIDTH  = 60;
-const uint16_t CREST_HEIGHT = 60;
+// Big PNG boot crest — stub. Run make_crest.py to populate.
+const uint8_t  CREST_PNG[1]   = {0};
+const uint32_t CREST_PNG_LEN  = 0;
+const uint16_t CREST_WIDTH    = 130;   // target render size when populated
+const uint16_t CREST_HEIGHT   = 130;
+
+// Legacy RGB565 boot crest (used until CREST_PNG_LEN is non-zero).
+const uint16_t CREST_RGB565_WIDTH  = 60;
+const uint16_t CREST_RGB565_HEIGHT = 60;
 
 const uint16_t CREST_SMALL_WIDTH  = 24;
 const uint16_t CREST_SMALL_HEIGHT = 24;

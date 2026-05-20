@@ -18,6 +18,7 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <Update.h>
+#include <MD5Builder.h>
 #include <esp_now.h>
 
 namespace client_ota {
@@ -33,6 +34,11 @@ static char           g_err_msg[80] = {0};
 static HTTPClient g_http;
 static WiFiClient* g_stream = nullptr;
 static uint32_t   g_phase_t0 = 0;
+// Receiving-side MD5 — computed in parallel with Update.write so we
+// can compare against the offer's hash post-flash. Not used to fail
+// the install (Update.setMD5 is intentionally NOT called — see
+// commit history); just logged for diagnostic visibility.
+static MD5Builder g_rx_md5;
 
 void begin() {
     g_phase     = PHASE_IDLE;
@@ -40,6 +46,18 @@ void begin() {
 }
 
 void note_offer(const FwAvailPayload& offer) {
+    // Defensive guard: ignore offers whose build code matches our
+    // running firmware. Without this, a stale offer can stay cached
+    // through the post-install reboot and the Settings CTA shows
+    // "v17 → v17" — alarming for the operator. The wall-box should
+    // stop offering once peer.fw_build catches up, but this also
+    // protects against any timing window where it hasn't yet.
+    if (offer.build_code == CONTROLLER_FW_BUILD) {
+        Serial.printf("[ota] ignoring same-build offer (v%u)\n",
+                      (unsigned)offer.build_code);
+        g_has_offer = false;
+        return;
+    }
     g_offer     = offer;
     g_has_offer = true;
     Serial.printf("[ota] offer received: build=%u size=%u md5=%s\n",
@@ -174,19 +192,11 @@ void step() {
             fail(Update.errorString());
             return;
         }
-        // NOT calling Update.setMD5() — the wall-box's rescanned MD5
-        // could match its on-disk bytes, but if those bytes are not
-        // what was actually uploaded (e.g. LittleFS write truncated a
-        // chunk silently), the offer hash matches the served file but
-        // the served file is *not* a valid firmware. Update.h's MD5
-        // path then aborts with "MD5 mismatch" and we'd be stuck. Skip
-        // the strict check; TCP integrity + Update.h's own
-        // magic-byte/size validation are enough to catch a bad binary.
-        // Log the offered hash for visibility.
-        if (g_offer.md5_hex[0]) {
-            Serial.printf("[ota] expected md5: %s (not strict-checked)\n",
-                          g_offer.md5_hex);
-        }
+        // NOT calling Update.setMD5() — see commit history. Compute
+        // MD5 in parallel with the write stream below so we can log
+        // a diagnostic comparison at the end, but don't fail the
+        // install on mismatch.
+        g_rx_md5.begin();
 
         g_stream = g_http.getStreamPtr();
         g_phase  = PHASE_DOWNLOAD;
@@ -204,12 +214,25 @@ void step() {
                 fail(Update.errorString());
                 return;
             }
+            g_rx_md5.add(buf, got);   // parallel hash for diagnostic compare
             g_bytes_recv += got;
         }
         if ((int)g_bytes_recv >= (int)g_bytes_total) {
             g_http.end();
             WiFi.disconnect();
             g_stream = nullptr;
+
+            // Finalise hash + log the comparison. Doesn't fail the
+            // install — useful to see whether the wall-box's offer
+            // hash matches what we actually received.
+            g_rx_md5.calculate();
+            char rx_hex[33];
+            g_rx_md5.getChars(rx_hex);
+            Serial.printf("[ota] expected md5: %s\n", g_offer.md5_hex);
+            Serial.printf("[ota] received md5: %s%s\n", rx_hex,
+                          strcasecmp(rx_hex, g_offer.md5_hex) == 0
+                              ? " (match)" : " (MISMATCH)");
+
             if (!Update.end(true)) {
                 fail(Update.errorString());
                 return;

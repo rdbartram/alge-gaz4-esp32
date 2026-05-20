@@ -5,6 +5,7 @@
 #include "config.h"
 #include "crest.h"
 #include "espnow_client.h"
+#include "client_ota.h"
 
 namespace uih {
 
@@ -45,10 +46,22 @@ void draw_header(const char* title) {
     d.setTextDatum(middle_left);
     d.drawString(BRAND_NAME, brand_x, HEADER_HEIGHT / 2);
 
-    // Right: reserve a fixed 40px strip for the status icons so the
-    // right-side title never overlaps them.
-    const int icon_strip_x = DISPLAY_WIDTH - 40;
-    draw_link_icon(icon_strip_x, 8, espnow_client::link_ok(),
+    // Right: reserve a fixed 56px strip for the status icons so the
+    // right-side title never overlaps them. Order (right→left):
+    //   battery, link, update-available badge (when pending).
+    const int icon_strip_x = DISPLAY_WIDTH - 56;
+    if (client_ota::has_offer()) {
+        // Small green down-arrow at the left of the strip — visible on
+        // every screen so the operator doesn't have to wander into
+        // Settings to discover a pending update. 10x14, two-pixel
+        // shaft + chevron tip.
+        const int bx = icon_strip_x + 2;
+        const int by = 7;
+        d.fillRect(bx + 3, by,     4, 8, COLOR_SUCCESS);   // shaft
+        d.fillTriangle(bx,     by + 7, bx + 9, by + 7,
+                       bx + 4, by + 13,                    COLOR_SUCCESS); // tip
+    }
+    draw_link_icon(icon_strip_x + 14, 8, espnow_client::link_ok(),
                    espnow_client::last_rssi());
     draw_battery_icon(DISPLAY_WIDTH - 22, 6);
 
@@ -199,9 +212,35 @@ void draw_link_icon(int16_t x, int16_t y, bool linked, int8_t rssi) {
 }
 
 void draw_gear_icon(int16_t x, int16_t y) {
+    // Old icon was two concentric circles — read as "blob", not gear.
+    // Hand-stamped 16×16 bitmap of a proper 8-tooth cog so it actually
+    // looks like a gear. 1 = body pixel, 0 = transparent.
+    static const uint8_t GEAR[16][16] = {
+        {0,0,0,0,0,0,1,1,1,1,0,0,0,0,0,0},
+        {0,0,0,0,0,0,1,1,1,1,0,0,0,0,0,0},
+        {0,0,1,0,0,1,1,1,1,1,1,0,0,1,0,0},
+        {0,0,1,1,1,1,1,0,0,1,1,1,1,1,0,0},
+        {0,0,0,1,1,1,0,0,0,0,1,1,1,0,0,0},
+        {0,0,0,1,1,0,0,0,0,0,0,1,1,0,0,0},
+        {1,1,1,1,0,0,0,0,0,0,0,0,1,1,1,1},
+        {1,1,1,0,0,0,0,1,1,0,0,0,0,1,1,1},
+        {1,1,1,0,0,0,0,1,1,0,0,0,0,1,1,1},
+        {1,1,1,1,0,0,0,0,0,0,0,0,1,1,1,1},
+        {0,0,0,1,1,0,0,0,0,0,0,1,1,0,0,0},
+        {0,0,0,1,1,1,0,0,0,0,1,1,1,0,0,0},
+        {0,0,1,1,1,1,1,0,0,1,1,1,1,1,0,0},
+        {0,0,1,0,0,1,1,1,1,1,1,0,0,1,0,0},
+        {0,0,0,0,0,0,1,1,1,1,0,0,0,0,0,0},
+        {0,0,0,0,0,0,1,1,1,1,0,0,0,0,0,0},
+    };
     auto& d = M5.Display;
-    d.fillCircle(x + 8, y + 8, 7, COLOR_DIM);
-    d.fillCircle(x + 8, y + 8, 3, COLOR_PRIMARY);
+    for (int row = 0; row < 16; ++row) {
+        for (int col = 0; col < 16; ++col) {
+            if (GEAR[row][col]) d.drawPixel(x + col, y + row, COLOR_DIM);
+        }
+    }
+    // Hub dot in accent so the eye locks onto the centre.
+    d.fillCircle(x + 8, y + 8, 1, COLOR_PRIMARY);
 }
 
 } // namespace uih

@@ -451,14 +451,16 @@ static void draw_splash() {
     }
     uih::centre_text(cx, below_crest + 12, BRAND_NAME,
                      COLOR_TEXT, &fonts::efontJA_16);
-    uih::centre_text(cx, below_crest + 32, "v" FIRMWARE_VERSION " . seit 1967",
-                     COLOR_DIM, &fonts::FreeSans9pt7b);
-    // Build code on its own line so OTA test cycles are obvious: cable-
-    // flashed build N, OTA bumps to N+1, splash shows N+1.
-    char b[16];
-    snprintf(b, sizeof(b), "Build %u", (unsigned)CONTROLLER_FW_BUILD);
-    uih::centre_text(cx, below_crest + 50, b, COLOR_ACCENT,
-                     &fonts::FreeSans9pt7b);
+    // Single tidy "vX.Y.Z · build N · seit 1967" line so the build
+    // number doesn't feel shouted. Built-in 5x7 font keeps it small.
+    char b[40];
+    snprintf(b, sizeof(b), "v%s . build %u . seit 1967",
+             FIRMWARE_VERSION, (unsigned)CONTROLLER_FW_BUILD);
+    auto& dd = M5.Display;
+    dd.setFont(&fonts::Font0);
+    dd.setTextColor(COLOR_DIM, COLOR_BG_DARK);
+    dd.setTextDatum(top_center);
+    dd.drawString(b, cx, below_crest + 36);
 
     // progress bar
     const int barx = 40, bary = 222, barw = 240, barh = 8;
@@ -1418,16 +1420,15 @@ static void draw_ota_update() {
     auto& d = M5.Display;
     uih::draw_header("FIRMWARE-UPDATE");
 
-    // Version delta — "v<running> → v<offered>" — sits right under the
-    // header so the operator can sanity-check what's being installed
-    // before it commits, and verify after reboot that the new build is
-    // running by comparing against the splash build number.
+    // Version delta sits right under the header. efontJA_14 so the
+    // arrow glyph renders (FreeSans9pt7b is ASCII-only and was showing
+    // boxes for "→"). Plain ASCII "->" works too and is universal.
     char ver[24];
-    snprintf(ver, sizeof(ver), "v%u → v%u",
+    snprintf(ver, sizeof(ver), "v%u -> v%u",
              (unsigned)CONTROLLER_FW_BUILD,
              (unsigned)client_ota::offer().build_code);
-    uih::centre_text(DISPLAY_WIDTH / 2, 30, ver, COLOR_DIM,
-                     &fonts::FreeSans9pt7b);
+    uih::centre_text(DISPLAY_WIDTH / 2, 34, ver, COLOR_DIM,
+                     &fonts::efontJA_14);
 
     const auto p     = client_ota::phase();
     const uint32_t r = client_ota::bytes_received();
@@ -1615,10 +1616,8 @@ static void draw_settings() {
     // otherwise it's the (rarely-used) factory reset. Both run through
     // the same touch handler which branches on client_ota::has_offer().
     if (client_ota::has_offer()) {
-        // Show "v<running> → v<offered>" so the operator can see exactly
-        // what they'd be installing before tapping in.
         char lbl[48];
-        snprintf(lbl, sizeof(lbl), "Firmware-Update: v%u → v%u",
+        snprintf(lbl, sizeof(lbl), "Firmware-Update: v%u -> v%u",
                  (unsigned)CONTROLLER_FW_BUILD,
                  (unsigned)client_ota::offer().build_code);
         g_set_btn_factory = uih::draw_button(8, 158, DISPLAY_WIDTH - 16, 22,
@@ -2249,6 +2248,11 @@ static void check_long_press() {
 
 static void draw_link_banner() {
     if (g_screen == SCREEN_SPLASH || g_screen == SCREEN_SETUP) return;
+    // During an OTA the controller deliberately drops ESP-NOW to join
+    // the wall-box's SoftAP. The link goes "cold" by definition for
+    // ~30 s; firing FUNK VERLOREN over the progress bar is alarming
+    // and visually clobbers the version/percent display.
+    if (g_screen == SCREEN_OTA_UPDATE) return;
     const bool ok = espnow_client::link_ok() && espnow_client::is_paired();
     const uint32_t now = millis();
     if (!ok) {

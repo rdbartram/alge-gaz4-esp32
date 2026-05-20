@@ -55,7 +55,7 @@
 // Bump in lockstep with CONTROLLER_FW_BUILD_EXPECTED on the wall-box
 // every time we ship a new controller binary. Reported in each 5 s
 // heartbeat so the wall-box knows whether to nudge for OTA.
-#define CONTROLLER_FW_BUILD 17u
+#define CONTROLLER_FW_BUILD 18u
 
 // ----- Match history -----------------------------------------------------
 #define HISTORY_MAX_ENTRIES 5

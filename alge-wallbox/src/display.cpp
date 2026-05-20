@@ -267,19 +267,24 @@ static void draw_footer(const wb_state::Snapshot& s) {
 //  Screens
 // =====================================================================
 static void draw_screen_boot() {
-    // Big centred crest from the legacy 60×60 RGB565 bitmap.
-    if (CREST_WIDTH && CREST_HEIGHT) {
+    // Prefer the big PNG (same drawPng path as the header — crisp,
+    // gradient-friendly). Fall back to the legacy 60×60 RGB565 only if
+    // the PNG isn't available (e.g. partial regen of crest.cpp).
+    if (CREST_PNG_LEN && CREST_WIDTH && CREST_HEIGHT) {
         const int x = (DISPLAY_WIDTH - CREST_WIDTH) / 2;
-        sprite.pushImage(x, 60, CREST_WIDTH, CREST_HEIGHT, CREST_RGB565);
+        sprite.drawPng(CREST_PNG, CREST_PNG_LEN, x, 50);
+    } else if (CREST_RGB565_WIDTH && CREST_RGB565_HEIGHT) {
+        const int x = (DISPLAY_WIDTH - CREST_RGB565_WIDTH) / 2;
+        sprite.pushImage(x, 60, CREST_RGB565_WIDTH, CREST_RGB565_HEIGHT, CREST_RGB565);
     }
-    centre(140, "Startet…", COLOR_ACCENT, &fonts::efontJA_24);
+    centre(190, "Startet…", COLOR_ACCENT, &fonts::efontJA_24);
 
     // simple progress dots
     static int phase = 0;
     phase = (phase + 1) % 4;
     char dots[5] = "   ";
     for (int i = 0; i <= phase && i < 3; ++i) dots[i] = '.';
-    centre(180, dots, COLOR_DIM, &fonts::FreeSansBold18pt7b);
+    centre(225, dots, COLOR_DIM, &fonts::FreeSansBold18pt7b);
 }
 
 static void draw_screen_pairing(const wb_state::Snapshot& s) {
