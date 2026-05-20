@@ -226,27 +226,41 @@ static void draw_footer(const wb_state::Snapshot& s) {
     sprite.fillRect(0, y0, DISPLAY_WIDTH, 50, COLOR_BG_DARK);
 
     sprite.setFont(&fonts::efontJA_14);
-    sprite.setTextDatum(top_left);
-    sprite.setTextColor(s.polarity_ok ? COLOR_SUCCESS : COLOR_WARN, COLOR_BG_DARK);
-    sprite.drawString(s.polarity_ok ? "Pol: OK" : "Pol: ?", 6, y0);
 
-    sprite.setTextColor(s.radio_linked ? COLOR_SUCCESS : COLOR_DIM, COLOR_BG_DARK);
-    char line[40];
-    if (s.radio_linked) snprintf(line, sizeof(line), "Funk: %d dBm", s.last_rssi);
-    else                snprintf(line, sizeof(line), "Funk: --");
-    sprite.drawString(line, 6, y0 + 16);
+    // Three balanced rows. Earlier layout had "TX: aktiv" and the
+    // version/pult line sharing y0+32 which crowded together on the
+    // 170-px-wide panel. Stack each system fact on its own row, paired
+    // with a complementary right-aligned counter so each row reads
+    // cleanly as "[status] | [count]".
+    auto row = [&](int dy, const char* left, uint16_t lc,
+                   const char* right, uint16_t rc) {
+        sprite.setTextColor(lc, COLOR_BG_DARK);
+        sprite.setTextDatum(top_left);
+        sprite.drawString(left, 6, y0 + dy);
+        sprite.setTextColor(rc, COLOR_BG_DARK);
+        sprite.setTextDatum(top_right);
+        sprite.drawString(right, DISPLAY_WIDTH - 6, y0 + dy);
+    };
+
+    char l[24], r[24];
+
+    snprintf(l, sizeof(l), s.polarity_ok ? "Pol: OK" : "Pol: ?");
+    snprintf(r, sizeof(r), "v%s", FIRMWARE_VERSION);
+    row(0, l, s.polarity_ok ? COLOR_SUCCESS : COLOR_WARN,
+           r, COLOR_DIM);
+
+    if (s.radio_linked) snprintf(l, sizeof(l), "Funk: %d dBm", s.last_rssi);
+    else                snprintf(l, sizeof(l), "Funk: --");
+    snprintf(r, sizeof(r), "build %u", (unsigned)CONTROLLER_FW_BUILD_EXPECTED);
+    row(16, l, s.radio_linked ? COLOR_SUCCESS : COLOR_DIM,
+            r, COLOR_DIM);
 
     const bool tx_recent = (millis() - s.last_tx_ms) < 1500;
-    sprite.setTextColor(tx_recent ? COLOR_ACCENT : COLOR_DIM, COLOR_BG_DARK);
-    snprintf(line, sizeof(line), "TX: %s", tx_recent ? "aktiv" : "ruht");
-    sprite.drawString(line, 6, y0 + 32);
-
-    sprite.setTextColor(COLOR_DIM, COLOR_BG_DARK);
-    sprite.setTextDatum(top_right);
-    snprintf(line, sizeof(line), "v%s . %u Pult%s",
-             FIRMWARE_VERSION, s.paired_peer_count,
+    snprintf(l, sizeof(l), "TX: %s", tx_recent ? "aktiv" : "ruht");
+    snprintf(r, sizeof(r), "%u Pult%s", s.paired_peer_count,
              s.paired_peer_count == 1 ? "" : "e");
-    sprite.drawString(line, DISPLAY_WIDTH - 6, y0 + 32);
+    row(32, l, tx_recent ? COLOR_ACCENT : COLOR_DIM,
+            r, COLOR_DIM);
 }
 
 // =====================================================================
