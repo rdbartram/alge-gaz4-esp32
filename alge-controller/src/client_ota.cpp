@@ -12,11 +12,13 @@
 #include "client_ota.h"
 #include "config.h"
 #include "credentials.h"
+#include "espnow_client.h"
 
 #include <Arduino.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <Update.h>
+#include <esp_now.h>
 
 namespace client_ota {
 
@@ -72,11 +74,22 @@ void perform_update() {
     g_err_msg[0]  = '\0';
     g_phase_t0    = millis();
 
-    // WALLBOX_AP_SSID — explicitly the wall-box's SoftAP, not the
-    // controller's own AP. Earlier this used WIFI_AP_SSID which
-    // resolved to the controller's own AP name ("FC-Waengi-Tafel"),
-    // a network that never existed for the controller to join — every
-    // OTA attempt timed out at the 15 s mark.
+    // Before joining the wall-box's SoftAP as a regular WPA2 STA, fully
+    // tear down ESP-NOW. The wall-box's MAC is currently registered
+    // here as an encrypted (LMK) ESP-NOW peer; on arduino-esp32 the
+    // wifi stack can't reconcile "same MAC with two different security
+    // profiles" and the AP association silently fails — that's what
+    // produced WL_CONNECTED + DHCP-from-somewhere-else + TCP refused
+    // every time we tried. After the OTA we ESP.restart anyway, so
+    // ESP-NOW re-pairs cleanly from the persisted peer in NVS.
+    if (espnow_client::is_paired()) {
+        esp_now_del_peer(espnow_client::paired_mac());
+    }
+    esp_now_deinit();
+    WiFi.disconnect(true, true);    // forget any previous STA state
+    delay(200);
+    WiFi.mode(WIFI_STA);
+
     Serial.printf("[ota] joining %s...\n", WALLBOX_AP_SSID);
     WiFi.begin(WALLBOX_AP_SSID, WALLBOX_AP_PASSWORD);
 }
