@@ -64,6 +64,8 @@ fi
 if [[ "$SKIP_BUILD" != "1" ]]; then
     echo "[ota] Building wall-box firmware (env: $PIO_ENV)..."
     (cd "$WALLBOX_DIR" && pio run -e "$PIO_ENV")
+fi
+if [[ "$SKIP_BUILD" != "1" && "$SKIP_BUILD_CTRL" != "1" ]]; then
     echo "[ota] Building controller firmware (env: $CONTROLLER_ENV)..."
     (cd "$CONTROLLER_DIR" && pio run -e "$CONTROLLER_ENV")
 fi

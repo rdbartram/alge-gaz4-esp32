@@ -678,8 +678,12 @@ static void draw_match() {
     g_match_btn_halftime = uih::draw_button(170, 204, 140, 30, right_label,
         COLOR_PRIMARY, COLOR_TEXT, true);
 
-    // Settings cog at top-right corner of header (tappable region)
-    g_match_btn_settings = { DISPLAY_WIDTH - 24, 4, 20, 20 };
+    // Settings cog at the top-right corner of the header. The visual
+    // 20×20 cog was historically tap-able only at its exact pixels —
+    // hard to hit reliably with a fingertip. Expand the touch rect to
+    // a generous 60×28 covering the entire right end of the header
+    // strip (visual stays compact via the existing crest/cog draw).
+    g_match_btn_settings = { DISPLAY_WIDTH - 60, 0, 60, HEADER_HEIGHT };
 }
 
 // Partial redraw for the per-second tick — only the regions that
@@ -1498,8 +1502,11 @@ static void draw_settings() {
     // otherwise it's the (rarely-used) factory reset. Both run through
     // the same touch handler which branches on client_ota::has_offer().
     if (client_ota::has_offer()) {
-        char lbl[40];
-        snprintf(lbl, sizeof(lbl), "Firmware-Update verfügbar — v%u",
+        // Show "v<running> → v<offered>" so the operator can see exactly
+        // what they'd be installing before tapping in.
+        char lbl[48];
+        snprintf(lbl, sizeof(lbl), "Firmware-Update: v%u → v%u",
+                 (unsigned)CONTROLLER_FW_BUILD,
                  (unsigned)client_ota::offer().build_code);
         g_set_btn_factory = uih::draw_button(8, 158, DISPLAY_WIDTH - 16, 22,
                                              lbl, COLOR_BG_DARK, COLOR_SUCCESS);
@@ -1549,7 +1556,10 @@ static void handle_settings_touch(int16_t x, int16_t y) {
             // operator onto the OTA progress screen and kick the state
             // machine. tick() polls client_ota::step() while we're on
             // SCREEN_OTA_UPDATE so the LCD can repaint between chunks.
-            open_confirm("Firmware-Update jetzt installieren?",
+            char msg[64];
+            snprintf(msg, sizeof(msg), "Update auf v%u jetzt installieren?",
+                     (unsigned)client_ota::offer().build_code);
+            open_confirm(msg,
                          []() {
                              Serial.println("[ui] OTA confirm → perform_update");
                              client_ota::perform_update();

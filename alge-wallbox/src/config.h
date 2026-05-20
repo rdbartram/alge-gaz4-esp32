@@ -72,4 +72,4 @@
 // controller binary. The wall-box compares against each paired
 // controller's heartbeat-reported build code; if a peer is older, it
 // gets a unicast MSG_FIRMWARE_AVAIL nudge.
-#define CONTROLLER_FW_BUILD_EXPECTED 2u
+#define CONTROLLER_FW_BUILD_EXPECTED 3u
