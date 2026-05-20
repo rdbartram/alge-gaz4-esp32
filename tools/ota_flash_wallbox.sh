@@ -30,6 +30,7 @@ WALLBOX_OTA_AUTH="${WALLBOX_OTA_AUTH:-1967}"
 WIFI_IF="${WIFI_IF:-en0}"
 PIO_ENV="${PIO_ENV:-lilygo-t-display-s3}"
 SKIP_BUILD="${SKIP_BUILD:-0}"
+SKIP_BUILD_CTRL="${SKIP_BUILD_CTRL:-0}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
