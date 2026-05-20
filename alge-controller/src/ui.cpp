@@ -40,6 +40,11 @@ static void show_toast(const char* msg) {
     g_toast[sizeof(g_toast) - 1] = '\0';
     g_toast_until_ms = millis() + 1500;
 }
+static void show_toast_long(const char* msg, uint32_t ms) {
+    strncpy(g_toast, msg, sizeof(g_toast) - 1);
+    g_toast[sizeof(g_toast) - 1] = '\0';
+    g_toast_until_ms = millis() + ms;
+}
 
 // SETUP-screen working state
 static uint8_t  g_setup_preset_idx = 0;
@@ -288,6 +293,23 @@ void tick() {
     if (cur_layout_v != s_last_layout_v) {
         s_last_layout_v = cur_layout_v;
         g_invalidate = true;
+    }
+
+    // First time an OTA offer comes through (or when the offered build
+    // changes), surface a toast so the operator notices without having
+    // to navigate to Settings. We track the build code we've already
+    // announced so the same offer doesn't re-toast every heartbeat.
+    static uint32_t s_last_toasted_offer = 0;
+    if (client_ota::has_offer() &&
+        client_ota::offer().build_code != s_last_toasted_offer &&
+        g_screen != SCREEN_OTA_UPDATE &&   // already on the OTA screen
+        g_screen != SCREEN_CONFIRM) {      // user mid-confirm; don't clobber
+        s_last_toasted_offer = client_ota::offer().build_code;
+        char msg[48];
+        snprintf(msg, sizeof(msg), "Update v%u verfügbar — Einst.",
+                 (unsigned)client_ota::offer().build_code);
+        show_toast_long(msg, 4000);
+        vibe_double();
     }
 
     if (g_invalidate) {
