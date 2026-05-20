@@ -236,7 +236,12 @@ void begin() {
     // begin()); the SoftAP is what hosts the OTA endpoint. ESP-NOW + AP
     // coexist on channel 1.
     WiFi.mode(WIFI_AP_STA);
-    WiFi.softAP(AP_SSID, AP_PASSWORD, CHANNEL, /*hidden=*/0, /*max_conn=*/2);
+    // max_conn=6 — laptop (for OTA push) + up to 6 controllers. Was 2,
+    // which caused the controller's HTTP connect to silently get
+    // refused if a stale association was still consuming a slot
+    // (e.g. the laptop hadn't disconnected from a previous OTA run
+    // before the controller tried to fetch /controller.bin).
+    WiFi.softAP(AP_SSID, AP_PASSWORD, CHANNEL, /*hidden=*/0, /*max_conn=*/6);
     WiFi.setHostname(HOSTNAME);
 
     Serial.printf("[ota] SoftAP up: SSID=%s  IP=%s\n", AP_SSID,

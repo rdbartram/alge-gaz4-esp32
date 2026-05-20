@@ -102,24 +102,37 @@ void step() {
             if (millis() - g_phase_t0 > 15000) fail("no DHCP lease");
             return;
         }
-        Serial.printf("[ota] joined, local IP %s — settling 1 s\n",
-                      WiFi.localIP().toString().c_str());
-
-        // Even after DHCP completes, the wall-box's WebServer accept
-        // loop is processing the new STA association via its main
-        // loop's handleClient() polling — give it a beat before the
-        // first TCP SYN lands. Without this the first attempt nearly
-        // always returns -1 (CONNECTION_REFUSED).
+        const IPAddress gw = WiFi.gatewayIP();
+        Serial.printf("[ota] joined, IP %s gw %s — settling 1 s\n",
+                      WiFi.localIP().toString().c_str(),
+                      gw.toString().c_str());
         delay(1000);
 
-        // Open the HTTP request — getStreamPtr() lets us read bytes
-        // a chunk at a time from step() without blocking. Five
-        // retries with 1 s spacing covers a wall-box that's busy
-        // mid-burst on the GAZ4 UART (each burst blocks for ~100-
-        // 200 ms; under load we can miss several heartbeats).
+        // Raw TCP probe before HTTP — tells us whether the failure is
+        // at the TCP layer (kernel refusing, route wrong, max_conn
+        // full) or only at the HTTP layer. If we can't even open a
+        // socket to gw:80, retrying HTTP will just produce the same
+        // -1 over and over.
+        WiFiClient probe;
+        if (!probe.connect(gw, 80, 4000)) {
+            // Try a slightly longer connect cycle before giving up —
+            // the wall-box's accept loop might still be catching up.
+            delay(1500);
+            if (!probe.connect(gw, 80, 4000)) {
+                char m[80];
+                snprintf(m, sizeof(m), "TCP %s:80 closed (we are %s)",
+                         gw.toString().c_str(),
+                         WiFi.localIP().toString().c_str());
+                fail(m);
+                return;
+            }
+        }
+        probe.stop();
+        Serial.println("[ota] TCP probe OK — proceeding to HTTP GET");
+
         char url[64];
-        snprintf(url, sizeof(url), "http://192.168.4.1%s",
-                 g_offer.fetch_path);
+        snprintf(url, sizeof(url), "http://%s%s",
+                 gw.toString().c_str(), g_offer.fetch_path);
         int code = -1;
         for (int attempt = 0; attempt < 5 && code != HTTP_CODE_OK; ++attempt) {
             if (attempt > 0) {
@@ -127,7 +140,7 @@ void step() {
                 delay(1000);
             }
             g_http.begin(url);
-            g_http.setConnectTimeout(8000);   // default 5 s -> 8 s
+            g_http.setConnectTimeout(8000);
             g_http.setTimeout(10000);
             code = g_http.GET();
             Serial.printf("[ota] GET %s -> %d (attempt %d)\n",
