@@ -67,8 +67,19 @@ void tx_goal_flash() {
 
 void gaz4_tx_scheduler() {
     const auto snap = wb_state::snapshot();
-    if (snap.wb_mode != wb_state::WB_MATCH_LIVE) {
-        // GAZ4 is silent unless a match is live (or maintenance is running).
+    // Drive GAZ4 purely off match_state — controller link status (which
+    // toggles wb_mode between MATCH_LIVE and CONNECTION_LOST) must NOT
+    // gate scoreboard refreshes. If the operator's pult goes flat / out
+    // of range mid-match, the GAZ4 still needs to show the running clock
+    // and current score. Maintenance modes (POLARITY_TEST / SEGMENT_
+    // EXERCISE / BLANK_BURST) have their own transmitters in
+    // maintenance.cpp, so they're skipped here.
+    const bool match_active =
+        (snap.match_state != STATE_IDLE && snap.match_state != STATE_SETUP);
+    const bool ui_mode_ok =
+        (snap.wb_mode == wb_state::WB_MATCH_LIVE ||
+         snap.wb_mode == wb_state::WB_CONNECTION_LOST);
+    if (!match_active || !ui_mode_ok) {
         return;
     }
 
