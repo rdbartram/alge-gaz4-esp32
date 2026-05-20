@@ -74,16 +74,18 @@ PREV_SSID=""
 
 restore_wifi() {
     local rc=$?
+    # Always bounce regardless of PREV_SSID — when the script starts with
+    # WiFi off / disconnected we still want to drop the wall-box AP and
+    # let macOS pick the best preferred network on the way out. The off/on
+    # toggle is the most reliable way to do that without us needing to
+    # know the user's home/work SSID password.
+    echo
+    echo "[ota] Bouncing WiFi so macOS rejoins its preferred network..."
+    networksetup -setairportpower "$WIFI_IF" off || true
+    sleep 1
+    networksetup -setairportpower "$WIFI_IF" on  || true
     if [[ -n "$PREV_SSID" && "$PREV_SSID" != "$WALLBOX_SSID" ]]; then
-        echo
-        echo "[ota] Restoring WiFi (was: $PREV_SSID)..."
-        # Bouncing the radio is the most reliable way to make macOS
-        # rejoin from its preferred-networks list without us needing the
-        # original SSID's password (which lives in the Keychain).
-        networksetup -setairportpower "$WIFI_IF" off || true
-        sleep 1
-        networksetup -setairportpower "$WIFI_IF" on  || true
-        echo "[ota] WiFi bounced — macOS should rejoin '$PREV_SSID' shortly."
+        echo "[ota] Should rejoin '$PREV_SSID' shortly."
     fi
     exit $rc
 }
@@ -119,11 +121,24 @@ if [[ "$PREV_SSID" != "$WALLBOX_SSID" ]]; then
     done
 fi
 
+# The host_ip espota.py auto-detects is whichever interface socket()
+# resolves first — frequently the wired Ethernet or a VPN, NOT the WiFi
+# we just joined. The wall-box would then try to dial back to an IP it
+# can't reach, hang, and time out with "No response from device".
+# Read the actual WiFi IP and pass it explicitly.
+HOST_IP=$(ipconfig getifaddr "$WIFI_IF" 2>/dev/null || true)
+if [[ -z "$HOST_IP" ]]; then
+    echo "[ota] ERROR: couldn't read $WIFI_IF IP — is the AP join still up?" >&2
+    exit 1
+fi
+echo "[ota] Host IP on $WIFI_IF: $HOST_IP"
+
 echo "[ota] Uploading $FIRMWARE_BIN to $WALLBOX_IP:$WALLBOX_OTA_PORT ..."
 python3 "$ESPOTA" \
     --debug \
     --progress \
     --ip="$WALLBOX_IP" \
+    --host_ip="$HOST_IP" \
     --port="$WALLBOX_OTA_PORT" \
     --auth="$WALLBOX_OTA_AUTH" \
     --file="$FIRMWARE_BIN"
