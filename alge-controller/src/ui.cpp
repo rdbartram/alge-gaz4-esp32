@@ -136,6 +136,10 @@ static void check_long_press();
 static uint8_t g_brightness_pct  = 70;
 static uint8_t g_brightness_edit = 70;
 
+// Vorgaben pagination state — referenced from handle_settings_touch
+// (re-set to 0 on entry) so it lives up here at file scope.
+static uint8_t g_defaults_page = 0;
+
 static void apply_brightness() {
     uint16_t b = (uint16_t)g_brightness_pct * 255u / 100u;
     if (b < 20) b = 20;             // floor so the screen stays readable
@@ -843,23 +847,31 @@ static void draw_halftime() {
     uih::draw_clock(DISPLAY_WIDTH / 2, 82, s.half1_end_seconds, COLOR_DIM,
                     &fonts::FreeSansBold18pt7b);
 
-    // Pause countdown — measured from when this screen was entered.
-    // Uses the operator-configured Halbzeitpause from Vorgaben.
-    const uint32_t elapsed_ms = millis() - g_screen_entered_ms;
-    const int32_t remain = (int32_t)(state::defaults().pause_minutes * 60) - (int32_t)(elapsed_ms / 1000);
-    const uint16_t cmin = remain > 0 ? remain / 60 : 0;
-    const uint16_t csec = remain > 0 ? remain % 60 : 0;
-    // Pause label near its old position; big countdown number drops
-    // further down so it reads as visually centred in the lower half
-    // of the screen rather than huddling against the score row.
-    uih::centre_text(DISPLAY_WIDTH / 2, 130, "Pausenzeit",
-                     COLOR_DIM, &fonts::efontJA_14);
-    char buf[8];
-    snprintf(buf, sizeof(buf), "%02u:%02u", cmin, csec);
-    uih::centre_text(DISPLAY_WIDTH / 2, 160, buf,
-                     (remain < 60 && (millis() / 500) % 2)
-                         ? COLOR_WARN : COLOR_TEXT,
-                     &fonts::FreeSansBold24pt7b);
+    // Pause countdown — operator-configurable via Vorgaben. With it on,
+    // we render a countdown driven by the time this screen was entered
+    // (Vorgaben → "Halbzeitpause" minutes). With it off, the club's
+    // pace isn't on a board clock — we just show "PAUSE" and wait for
+    // the operator's "2.HZ" tap.
+    if (state::defaults().show_pause_countdown) {
+        const uint32_t elapsed_ms = millis() - g_screen_entered_ms;
+        const int32_t remain = (int32_t)(state::defaults().pause_minutes * 60)
+                             - (int32_t)(elapsed_ms / 1000);
+        const uint16_t cmin = remain > 0 ? remain / 60 : 0;
+        const uint16_t csec = remain > 0 ? remain % 60 : 0;
+        uih::centre_text(DISPLAY_WIDTH / 2, 130, "Pausenzeit",
+                         COLOR_DIM, &fonts::efontJA_14);
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%02u:%02u", cmin, csec);
+        uih::centre_text(DISPLAY_WIDTH / 2, 160, buf,
+                         (remain < 60 && (millis() / 500) % 2)
+                             ? COLOR_WARN : COLOR_TEXT,
+                         &fonts::FreeSansBold24pt7b);
+    } else {
+        uih::centre_text(DISPLAY_WIDTH / 2, 138, "PAUSE",
+                         COLOR_ACCENT, &fonts::FreeSansBold24pt7b);
+        uih::centre_text(DISPLAY_WIDTH / 2, 178, "auf Ref warten",
+                         COLOR_DIM, &fonts::efontJA_14);
+    }
 
     // Single big "start second half" button. In football the 2.HZ
     // always begins at the preset's half-time mark — 45:00 for adults,
@@ -888,14 +900,17 @@ static void draw_halftime() {
 // countdown band, so the rest of the screen doesn't flash.
 static void draw_halftime_tick() {
     auto& d = M5.Display;
+    // Skip the tick entirely when the countdown is disabled — the
+    // static "PAUSE" caption rendered by draw_halftime() doesn't change
+    // per second, and re-rendering it would just cause a flicker.
+    if (!state::defaults().show_pause_countdown) return;
+
     const uint32_t elapsed_ms = millis() - g_screen_entered_ms;
     const int32_t remain = (int32_t)(state::defaults().pause_minutes * 60) - (int32_t)(elapsed_ms / 1000);
     const uint16_t cmin = remain > 0 ? remain / 60 : 0;
     const uint16_t csec = remain > 0 ? remain % 60 : 0;
     char buf[8];
     snprintf(buf, sizeof(buf), "%02u:%02u", cmin, csec);
-    // Cover the same band the full draw uses (label y=130, countdown
-    // ends ~y=188), so leftover pixels from prior digits don't ghost.
     d.fillRect(60, 144, 200, 44, COLOR_BG_DARK);
     uih::centre_text(DISPLAY_WIDTH / 2, 152, buf,
                      (remain < 60 && (millis() / 500) % 2)
@@ -1425,6 +1440,7 @@ static void handle_settings_touch(int16_t x, int16_t y) {
         // — seed the edit from the currently-applied value.
         g_defaults_edit = state::defaults();
         g_brightness_edit = g_brightness_pct;
+        g_defaults_page = 0;
         go(SCREEN_DEFAULTS);
     }
 }
@@ -1794,29 +1810,32 @@ static uih::Rect g_def_pause_dec, g_def_pause_inc;
 static uih::Rect g_def_autoblank_toggle;
 static uih::Rect g_def_scorer_toggle;
 static uih::Rect g_def_autostart_toggle;
+static uih::Rect g_def_pausect_toggle;
 static uih::Rect g_def_bright_dec, g_def_bright_inc;
+static uih::Rect g_def_nav_prev, g_def_nav_next;
 static uih::Rect g_def_back;
 
 static void draw_defaults() {
     auto& d = M5.Display;
-    uih::draw_header("VORGABEN");
+    // Header shows the page index so the operator knows there's more.
+    char header[24];
+    snprintf(header, sizeof(header), "VORGABEN %u/2",
+             (unsigned)(g_defaults_page + 1));
+    uih::draw_header(header);
 
-    // Value row: [label .................. − value +]
-    // Buttons sit well clear of the centred value text so they don't overlap.
-    // efontJA_16 — labels like "Halbzeit-Länge:" need umlaut support.
     auto value_row = [&](int y_baseline, const char* label, const char* value,
                          uih::Rect& dec, uih::Rect& inc) {
         d.setTextColor(COLOR_TEXT, COLOR_BG_DARK);
         d.setFont(&fonts::efontJA_16);
         d.setTextDatum(middle_left);
         d.drawString(label, 10, y_baseline);
-        dec = uih::draw_button(158, y_baseline - 11, 26, 22, "-",
+        dec = uih::draw_button(158, y_baseline - 13, 26, 24, "-",
                                COLOR_BG_DARK, COLOR_WARN);
         d.setTextColor(COLOR_ACCENT, COLOR_BG_DARK);
         d.setFont(&fonts::FreeSansBold12pt7b);
         d.setTextDatum(middle_center);
         d.drawString(value, 232, y_baseline);
-        inc = uih::draw_button(282, y_baseline - 11, 26, 22, "+",
+        inc = uih::draw_button(282, y_baseline - 13, 26, 24, "+",
                                COLOR_BG_DARK, COLOR_SUCCESS);
     };
     auto toggle_row = [&](int y_baseline, const char* label, bool on,
@@ -1825,7 +1844,7 @@ static void draw_defaults() {
         d.setFont(&fonts::efontJA_16);
         d.setTextDatum(middle_left);
         d.drawString(label, 10, y_baseline);
-        tgl = uih::draw_button(158, y_baseline - 11, 150, 22,
+        tgl = uih::draw_button(158, y_baseline - 13, 150, 24,
                                on ? "AN" : "AUS",
                                on ? COLOR_SUCCESS : COLOR_DIM, COLOR_BG_DARK);
     };
@@ -1834,20 +1853,42 @@ static void draw_defaults() {
     snprintf(b1, sizeof(b1), "%u min", g_defaults_edit.half_minutes);
     snprintf(b2, sizeof(b2), "%u min", g_defaults_edit.pause_minutes);
     snprintf(b3, sizeof(b3), "%u %%",  g_brightness_edit);
-    // Six 28-px-spaced rows + back button. Rows at y=42/70/98/126/154/182,
-    // back at y=204.
-    value_row ( 42, "HZ Freund.:",   b1, g_def_half_dec,  g_def_half_inc);
-    value_row ( 70, "Halbzeitpause:", b2, g_def_pause_dec, g_def_pause_inc);
-    toggle_row( 98, "Auto-löschen:",  g_defaults_edit.auto_blank_after_match,
-                                      g_def_autoblank_toggle);
-    toggle_row(126, "Torschütze:",    g_defaults_edit.prompt_scorer_on_goal,
-                                      g_def_scorer_toggle);
-    toggle_row(154, "Auto-Start:",    g_defaults_edit.auto_start_after_break,
-                                      g_def_autostart_toggle);
-    value_row (182, "Helligkeit:",    b3, g_def_bright_dec, g_def_bright_inc);
 
-    g_def_back = uih::draw_button(10, 208, DISPLAY_WIDTH - 20, 26,
-                                  "< Speichern + Zurück", COLOR_PRIMARY, COLOR_TEXT);
+    if (g_defaults_page == 0) {
+        // Page 1: timing + match-flow toggles. 32-px rows at 58/90/122/154.
+        value_row ( 58, "HZ Freund.:",   b1, g_def_half_dec,  g_def_half_inc);
+        value_row ( 90, "Halbzeitpause:", b2, g_def_pause_dec, g_def_pause_inc);
+        toggle_row(122, "Auto-Start:",    g_defaults_edit.auto_start_after_break,
+                                          g_def_autostart_toggle);
+        toggle_row(154, "Pause-Anzeige:", g_defaults_edit.show_pause_countdown,
+                                          g_def_pausect_toggle);
+        // Inert rects so the touch handler doesn't pick up stale page-2 hits.
+        g_def_autoblank_toggle = {0, 0, 0, 0};
+        g_def_scorer_toggle    = {0, 0, 0, 0};
+        g_def_bright_dec = g_def_bright_inc = {0, 0, 0, 0};
+        g_def_nav_prev = {0, 0, 0, 0};
+        g_def_nav_next = uih::draw_button(170, 208, 140, 26,
+                                          "Weiter >", COLOR_PRIMARY, COLOR_TEXT);
+        g_def_back     = uih::draw_button(10, 208, 140, 26,
+                                          "< Abbrechen", COLOR_BG_DARK, COLOR_TEXT);
+    } else {
+        // Page 2: display / UX prefs.
+        toggle_row( 58, "Auto-löschen:",  g_defaults_edit.auto_blank_after_match,
+                                          g_def_autoblank_toggle);
+        toggle_row( 90, "Torschütze:",    g_defaults_edit.prompt_scorer_on_goal,
+                                          g_def_scorer_toggle);
+        value_row (122, "Helligkeit:",    b3, g_def_bright_dec, g_def_bright_inc);
+
+        g_def_half_dec  = g_def_half_inc  = {0, 0, 0, 0};
+        g_def_pause_dec = g_def_pause_inc = {0, 0, 0, 0};
+        g_def_autostart_toggle = {0, 0, 0, 0};
+        g_def_pausect_toggle   = {0, 0, 0, 0};
+        g_def_nav_prev = uih::draw_button(10, 208, 140, 26,
+                                          "< Zurück", COLOR_BG_DARK, COLOR_TEXT);
+        g_def_nav_next = {0, 0, 0, 0};
+        g_def_back     = uih::draw_button(170, 208, 140, 26,
+                                          "Speichern", COLOR_PRIMARY, COLOR_TEXT);
+    }
 }
 
 static void handle_defaults_touch(int16_t x, int16_t y) {
@@ -1869,6 +1910,9 @@ static void handle_defaults_touch(int16_t x, int16_t y) {
     } else if (uih::point_in(g_def_autostart_toggle, x, y)) {
         g_defaults_edit.auto_start_after_break = !g_defaults_edit.auto_start_after_break;
         changed = true;
+    } else if (uih::point_in(g_def_pausect_toggle, x, y)) {
+        g_defaults_edit.show_pause_countdown = !g_defaults_edit.show_pause_countdown;
+        changed = true;
     } else if (uih::point_in(g_def_bright_dec, x, y)) {
         if (g_brightness_edit > 10) {
             g_brightness_edit -= 10;
@@ -1884,18 +1928,29 @@ static void handle_defaults_touch(int16_t x, int16_t y) {
             apply_brightness();
             changed = true;
         }
+    } else if (uih::point_in(g_def_nav_next, x, y)) {
+        g_defaults_page = 1;
+        invalidate();
+    } else if (uih::point_in(g_def_nav_prev, x, y)) {
+        g_defaults_page = 0;
+        invalidate();
     } else if (uih::point_in(g_def_back, x, y)) {
-        // Ship the wallbox-synced defaults back over the radio and
-        // persist the controller-local brightness to NVS.
-        espnow_client::send_intent_set_defaults(
-            g_defaults_edit.half_minutes,
-            g_defaults_edit.pause_minutes,
-            g_defaults_edit.auto_blank_after_match,
-            g_defaults_edit.prompt_scorer_on_goal,
-            g_defaults_edit.auto_start_after_break);
-        g_brightness_pct = g_brightness_edit;
-        save_controller_prefs();
-        apply_brightness();
+        // Page 1: "Abbrechen" — bail out without sending defaults.
+        // Page 2: "Speichern" — flush edits to wallbox + persist
+        //                       controller-local brightness.
+        if (g_defaults_page == 1) {
+            espnow_client::send_intent_set_defaults(
+                g_defaults_edit.half_minutes,
+                g_defaults_edit.pause_minutes,
+                g_defaults_edit.auto_blank_after_match,
+                g_defaults_edit.prompt_scorer_on_goal,
+                g_defaults_edit.auto_start_after_break,
+                g_defaults_edit.show_pause_countdown);
+            g_brightness_pct = g_brightness_edit;
+            save_controller_prefs();
+            apply_brightness();
+        }
+        g_defaults_page = 0;       // reset for next entry
         go(SCREEN_SETTINGS);
     }
     // No save-while-editing: the wallbox-side write only happens on

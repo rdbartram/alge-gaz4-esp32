@@ -42,7 +42,8 @@ void send_intent_pre_match(uint8_t preset_idx, const char* opponent, uint16_t se
 void send_intent_register_goal(bool home_team, uint8_t jersey);
 void send_intent_set_defaults(uint8_t half_min, uint8_t pause_min,
                               bool autoblank, bool prompt_scorer,
-                              bool auto_start_after_break);
+                              bool auto_start_after_break,
+                              bool show_pause_countdown);
 
 // Skip the running PRE_MATCH / PRE_EXTRA_TIME countdown and jump
 // straight into the corresponding match phase.

@@ -101,6 +101,10 @@ struct Defaults {
     // self-advance once the clock hits zero. Default false — referees
     // don't run off our scoreboard so the operator should pace it.
     bool    auto_start_after_break;
+    // True = render the HZ-pause countdown on the controller & wall-box
+    // LCDs. Some clubs prefer no on-board pause clock — purely social
+    // halftime, ref calls the restart.
+    bool    show_pause_countdown;
 };
 
 // Combined snapshot: wallbox-side display state PLUS the full match state.

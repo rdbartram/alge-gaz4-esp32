@@ -173,6 +173,7 @@ void load_defaults() {
     g_defaults.auto_blank_after_match = p.getBool("d_autoblank", true);
     g_defaults.prompt_scorer_on_goal  = p.getBool("d_scorer",    false);
     g_defaults.auto_start_after_break = p.getBool("d_autoseg",   false);
+    g_defaults.show_pause_countdown   = p.getBool("d_pausect",   true);
     p.end();
 }
 
@@ -184,6 +185,7 @@ void save_defaults() {
     p.putBool ("d_autoblank", g_defaults.auto_blank_after_match);
     p.putBool ("d_scorer",    g_defaults.prompt_scorer_on_goal);
     p.putBool ("d_autoseg",   g_defaults.auto_start_after_break);
+    p.putBool ("d_pausect",   g_defaults.show_pause_countdown);
     p.end();
 }
 
@@ -532,6 +534,7 @@ bool apply_intent(const IntentPayload& it) {
         g_defaults.auto_blank_after_match  = it.defaults.auto_blank_after_match != 0;
         g_defaults.prompt_scorer_on_goal   = it.defaults.prompt_scorer_on_goal  != 0;
         g_defaults.auto_start_after_break  = it.defaults.auto_start_after_break != 0;
+        g_defaults.show_pause_countdown    = it.defaults.show_pause_countdown   != 0;
         save_defaults();
         break;
 
@@ -798,6 +801,7 @@ void fill_defaults_payload(DefaultsPayload& out) {
     out.auto_blank_after_match  = g_defaults.auto_blank_after_match ? 1 : 0;
     out.prompt_scorer_on_goal   = g_defaults.prompt_scorer_on_goal  ? 1 : 0;
     out.auto_start_after_break  = g_defaults.auto_start_after_break ? 1 : 0;
+    out.show_pause_countdown    = g_defaults.show_pause_countdown   ? 1 : 0;
 }
 
 } // namespace wb_state

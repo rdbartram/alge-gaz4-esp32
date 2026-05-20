@@ -37,6 +37,7 @@ void begin() {
     g_defaults.auto_blank_after_match  = true;
     g_defaults.prompt_scorer_on_goal   = false;
     g_defaults.auto_start_after_break  = false;
+    g_defaults.show_pause_countdown    = true;
 }
 
 void update_from_state(const StatePayload& s, int8_t rssi) {
@@ -80,6 +81,7 @@ void update_from_defaults(const DefaultsPayload& d) {
     g_defaults.auto_blank_after_match = (d.auto_blank_after_match != 0);
     g_defaults.prompt_scorer_on_goal  = (d.prompt_scorer_on_goal  != 0);
     g_defaults.auto_start_after_break = (d.auto_start_after_break != 0);
+    g_defaults.show_pause_countdown   = (d.show_pause_countdown   != 0);
 }
 
 void update_from_history(const HistoryPayload& h) {

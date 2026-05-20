@@ -114,7 +114,8 @@ struct DefaultsPayload {
     uint8_t  auto_blank_after_match;
     uint8_t  prompt_scorer_on_goal;
     uint8_t  auto_start_after_break;   // 1 = countdowns/halftimes auto-promote
-    uint8_t  reserved[3];               // pad for future use, keeps layout stable
+    uint8_t  show_pause_countdown;     // 1 = show HZ-Pause countdown on UI/board
+    uint8_t  reserved[2];               // pad for future use, keeps layout stable
 };
 
 // ---- Full state snapshot — what controllers render any screen from.

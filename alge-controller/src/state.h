@@ -50,6 +50,7 @@ struct Defaults {
     bool    auto_blank_after_match;
     bool    prompt_scorer_on_goal;
     bool    auto_start_after_break;
+    bool    show_pause_countdown;
 };
 
 // Compact history entry — what the wallbox sends per MSG_HISTORY packet.
