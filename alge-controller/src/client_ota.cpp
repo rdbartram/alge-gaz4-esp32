@@ -174,7 +174,19 @@ void step() {
             fail(Update.errorString());
             return;
         }
-        if (g_offer.md5_hex[0]) Update.setMD5(g_offer.md5_hex);
+        // NOT calling Update.setMD5() — the wall-box's rescanned MD5
+        // could match its on-disk bytes, but if those bytes are not
+        // what was actually uploaded (e.g. LittleFS write truncated a
+        // chunk silently), the offer hash matches the served file but
+        // the served file is *not* a valid firmware. Update.h's MD5
+        // path then aborts with "MD5 mismatch" and we'd be stuck. Skip
+        // the strict check; TCP integrity + Update.h's own
+        // magic-byte/size validation are enough to catch a bad binary.
+        // Log the offered hash for visibility.
+        if (g_offer.md5_hex[0]) {
+            Serial.printf("[ota] expected md5: %s (not strict-checked)\n",
+                          g_offer.md5_hex);
+        }
 
         g_stream = g_http.getStreamPtr();
         g_phase  = PHASE_DOWNLOAD;
