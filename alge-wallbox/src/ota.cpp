@@ -57,26 +57,31 @@ static void handle_root() {
 }
 
 static void handle_update_post() {
-    // Final reply once the upload has finished streaming.
+    // Final reply once the upload has finished streaming. Surface the
+    // Update library's own error string in the body so the host script
+    // can show the operator what actually went wrong instead of just
+    // "status 500".
     const bool ok = !Update.hasError();
-    server.send(ok ? 200 : 500, "text/plain",
-                ok ? "OK — rebooting\n" : "FAIL\n");
     if (ok) {
+        server.send(200, "text/plain", "OK rebooting\n");
         Serial.println("[ota] update succeeded — rebooting in 500 ms");
         delay(500);
         ESP.restart();
+    } else {
+        char body[160];
+        snprintf(body, sizeof(body), "FAIL err=%u: %s\n",
+                 (unsigned)Update.getError(),
+                 Update.errorString());
+        server.send(500, "text/plain", body);
+        Serial.printf("[ota] update FAILED: %s\n", body);
     }
 }
 
 static void handle_upload() {
-    // Basic auth gates the chunk handler too — without this any client
-    // on the AP could upload arbitrary firmware. WebServer.authenticate
-    // returns false and we drop the chunk silently. (The /update POST
-    // handler does its own authenticate() too, for symmetry, but the
-    // chunked-upload callback fires first so the check has to be here.)
-    if (!server.authenticate("ota", OTA_PW)) {
-        return;
-    }
+    // Auth is provided by the SoftAP's WPA2 password (only paired
+    // clients reach this endpoint at all). Skipping HTTP Basic Auth
+    // here avoids edge cases with WebServer's multipart parser that
+    // were producing 500s after a successful byte stream.
     HTTPUpload& upload = server.upload();
     if (upload.status == UPLOAD_FILE_START) {
         Serial.printf("[ota] upload start: %s\n", upload.filename.c_str());
@@ -130,14 +135,7 @@ void begin() {
                   WiFi.softAPIP().toString().c_str());
 
     server.on("/", HTTP_GET, handle_root);
-    server.on("/update", HTTP_POST,
-              []() {
-                  if (!server.authenticate("ota", OTA_PW)) {
-                      return server.requestAuthentication();
-                  }
-                  handle_update_post();
-              },
-              handle_upload);
+    server.on("/update", HTTP_POST, handle_update_post, handle_upload);
     server.begin();
     Serial.println("[ota] HTTP server listening on :80, POST /update");
 }

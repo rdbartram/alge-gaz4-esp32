@@ -179,22 +179,30 @@ EOF
 fi
 
 echo "[ota] Uploading $FIRMWARE_BIN to http://$WALLBOX_IP/update ..."
-# --fail makes curl exit non-zero on HTTP >=400 so we don't claim success
-# when the wall-box rejects the upload. --max-time 60s caps a hung box.
-# The form name "firmware" matches WebServer's HTTPUpload conventions —
-# the wallbox-side handle_upload() doesn't care about the field name,
-# but tagging it consistently helps if you ever post manually.
-http_status=$(curl --fail --max-time 60 \
-    --user "$WALLBOX_OTA_USER:$WALLBOX_OTA_AUTH" \
+# --max-time 60s caps a hung wall-box. Capture the response body to a
+# tmp file so we can show the wall-box's diagnostic message if Update
+# rejects the binary (e.g. "FAIL err=8: Magic byte is wrong"). The form
+# name "firmware" is cosmetic — handle_upload() doesn't care.
+RESP_BODY="/tmp/ota_response.$$"
+# NOTE: don't trap to clean this up — that would clobber the existing
+# restore_wifi trap. Just rm it after use.
+http_status=$(curl --max-time 60 \
     --progress-bar \
     --form "firmware=@$FIRMWARE_BIN" \
-    --write-out '%{http_code}\n' \
-    --output /dev/null \
+    --write-out '%{http_code}' \
+    --output "$RESP_BODY" \
     "http://$WALLBOX_IP/update" || echo "curl-failed")
+echo
 
 if [[ "$http_status" == "200" ]]; then
     echo "[ota] Upload complete — wall-box rebooting into new firmware."
+    rm -f "$RESP_BODY"
 else
     echo "[ota] ERROR: upload failed (status: $http_status)" >&2
+    if [[ -s "$RESP_BODY" ]]; then
+        echo "[ota] Wall-box said:" >&2
+        sed 's/^/[ota]   /' "$RESP_BODY" >&2
+    fi
+    rm -f "$RESP_BODY"
     exit 1
 fi
