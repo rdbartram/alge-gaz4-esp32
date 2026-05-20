@@ -279,18 +279,24 @@ static void handle_intent(const ScoreboardMessage& msg, const uint8_t* from) {
     // Always ACK so the controller knows the intent landed.
     send_intent_ack(from, msg.sequence, changed);
 
+    // Each broadcast type is handled independently — the previous
+    // if/else-if chain meant SET_DEFAULTS (which returns changed=true)
+    // never reached its broadcast_defaults_now() branch, so the wall-box
+    // saved the new defaults to NVS but never told the controller.
+    // Vorgaben toggles appeared to revert on next entry because the
+    // controller was still rendering its stale cache.
     if (changed) {
-        // Push fresh state to everyone right away — no waiting for the
-        // 1Hz heartbeat tick.
         broadcast_state_now();
-    } else if (msg.body.intent.intent_type == INTENT_REQUEST_FULL) {
+    }
+    if (msg.body.intent.intent_type == INTENT_SET_DEFAULTS) {
+        broadcast_defaults_now();
+    }
+    if (msg.body.intent.intent_type == INTENT_REQUEST_FULL) {
         broadcast_state_now();
         broadcast_defaults_now();
-    } else if (msg.body.intent.intent_type == INTENT_REQUEST_HISTORY) {
+    }
+    if (msg.body.intent.intent_type == INTENT_REQUEST_HISTORY) {
         send_history_to(from);
-    } else if (msg.body.intent.intent_type == INTENT_SET_DEFAULTS) {
-        broadcast_defaults_now();
-        broadcast_state_now();
     }
 }
 
