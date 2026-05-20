@@ -255,7 +255,25 @@ void begin() {
     server.on("/update", HTTP_POST, handle_update_post, handle_upload);
     server.on("/controller-update", HTTP_POST,
               handle_controller_upload_post, handle_controller_upload);
-    server.on("/controller.bin", HTTP_GET, handle_controller_get);
+    // HTTP_ANY so `curl -I` (HEAD) and real GETs both land on the
+    // streamer — HEAD just discards the body. Without this, debugging
+    // "did the upload land?" via curl -I returned the default 404 and
+    // looked like a failure even though SPIFFS had the file.
+    server.on("/controller.bin", HTTP_ANY, handle_controller_get);
+    // Tiny info endpoint for cheap sanity-checking from the host side:
+    //   curl http://192.168.4.1/controller-info
+    server.on("/controller-info", HTTP_GET, []() {
+        if (!has_controller_firmware()) {
+            server.send(404, "text/plain", "no controller.bin bundled\n");
+            return;
+        }
+        char body[120];
+        snprintf(body, sizeof(body),
+                 "size=%u\nmd5=%s\nexpected_build=%u\n",
+                 (unsigned)g_ctrl_fw_size, g_ctrl_fw_md5,
+                 (unsigned)CONTROLLER_FW_BUILD_EXPECTED);
+        server.send(200, "text/plain", body);
+    });
     server.begin();
     Serial.println("[ota] HTTP server listening on :80");
     Serial.println("[ota]   POST /update             — wall-box firmware");
